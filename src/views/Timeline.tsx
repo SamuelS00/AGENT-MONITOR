@@ -2,13 +2,22 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "../app/store";
 import { concurrency, descendants, visibleRows } from "../model/tree";
-import { fmtClock, fmtDuration, fmtShortClock } from "../model/format";
+import { fmtClock, fmtDate, fmtDuration, fmtShortClock } from "../model/format";
 import { STATUS_LABEL } from "../model/status";
 import { Banner, EmptyState, Segmented, StatusGlyph } from "../ui/primitives";
 import { ExplorerBar } from "./Explorer";
 
 type Range = "fit" | "15m" | "1h";
-const STEPS = [10, 30, 60, 120, 300, 600, 900, 1800, 3600].map((s) => s * 1000);
+const HOUR = 3_600;
+const STEPS = [10, 30, 60, 120, 300, 600, 900, 1800, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, 24 * HOUR, 2 * 24 * HOUR, 7 * 24 * HOUR].map((s) => s * 1000);
+const MAX_TICKS = 8;
+
+/** Axis label that stays unambiguous: seconds for tight ranges, a date once the range or step reaches a day. */
+function tickLabel(t: number, step: number, spanMs: number) {
+  if (step >= 24 * HOUR * 1000) return fmtDate(t);
+  if (spanMs > 24 * HOUR * 1000) return `${fmtDate(t)} ${fmtShortClock(t)}`;
+  return step < 60_000 ? fmtClock(t) : fmtShortClock(t);
+}
 
 export function Timeline() {
   const { index, data, sessionId, expanded, toggle, selectedId, select, now } = useStore();
@@ -25,9 +34,15 @@ export function Timeline() {
   const t0 = range === "fit" ? first - span * 0.02 : now - span;
   const t1 = now + span * 0.04;
   const pct = (t: number) => ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * 100;
-  const step = STEPS.find((s) => (t1 - t0) / s <= 9) ?? STEPS[STEPS.length - 1];
+  const step = STEPS.find((s) => (t1 - t0) / s <= MAX_TICKS) ?? STEPS[STEPS.length - 1];
   const ticks: number[] = [];
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) ticks.push(t);
+  // Align to local clock boundaries (not UTC) so "06:00" lands on 06:00 for the viewer.
+  const tz = -new Date(t0).getTimezoneOffset() * 60_000;
+  for (let k = Math.ceil((t0 + tz) / step); ticks.length < 24; k++) {
+    const t = k * step - tz;
+    if (t > t1) break;
+    ticks.push(t);
+  }
 
   const series = concurrency(all, now);
   const peak = Math.max(1, ...series.map((p) => p.n));
@@ -56,7 +71,7 @@ export function Timeline() {
         <div className="tl-row tl-head">
           <div className="tl-label tl-corner">Agent</div>
           <div className="tl-canvas">
-            {ticks.map((t) => <span key={t} className="tick mono" style={{ left: `${pct(t)}%` }}>{step < 60_000 ? fmtClock(t) : fmtShortClock(t)}</span>)}
+            {ticks.map((t) => <span key={t} className="tick mono" style={{ left: `${pct(t)}%` }}>{tickLabel(t, step, t1 - t0)}</span>)}
           </div>
         </div>
         <div className="tl-row tl-conc">

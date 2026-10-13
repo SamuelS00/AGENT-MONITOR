@@ -92,7 +92,7 @@ export function Monitor() {
           </div>
         )}
       </div>
-      <div className="statusbar"><span>≈ estimated · — unavailable · ≥ lower bound</span><span className="grow" /><span>↑↓ select · ↵ open · right-click for actions</span></div>
+      <div className="statusbar"><span>≈ inferred or estimated · — unavailable · ≥ lower bound</span><span className="grow" /><span>↑↓ select · ↵ open · right-click for actions</span></div>
       {menu.node}
     </div>
   );

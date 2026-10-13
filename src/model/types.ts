@@ -25,6 +25,8 @@ export interface AgentNode {
   status: AgentStatus;
   startedAt?: number;
   endedAt?: number;
+  /** Last write seen in the session record; not the same as process activity. */
+  lastActivityAt?: number;
   waits: WaitSpan[];
   /** Own usage only. Rollups are computed in tree.ts so a child is never counted twice. */
   tokens: Metric<number>;

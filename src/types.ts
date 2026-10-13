@@ -23,6 +23,12 @@ export interface ExecutionNode {
   startedAt?: string;
   tokens?: number;
   relationship: SourceReliability;
+  modelReliability?: SourceReliability;
+  tokensIn?: number;
+  tokensOut?: number;
+  usageReliability?: SourceReliability;
+  usageSource?: string;
+  lastActivityAt?: string;
 }
 
 export interface MonitorSnapshot {

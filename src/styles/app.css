@@ -201,7 +201,7 @@ select.field { padding-right: var(--sp-2); }
 .tl-row.trow { background: transparent; } .tl-row.trow:hover .tl-label { background: var(--surface-hover); } .tl-row.trow.selected .tl-label { background: var(--surface-selected-inactive); }
 .tl-row .tl-label { background: var(--surface-content); } .tl-row.trow:hover { background: var(--surface-hover); }
 .tl-head { position: sticky; top: 0; z-index: 4; background: var(--surface-content); border-bottom: 1px solid var(--line-subtle); height: 26px; min-height: 26px; } .tl-corner { font-size: var(--fs-xs); font-weight: 600; color: var(--text-tertiary); padding-left: var(--sp-4); }
-.tl-canvas { position: relative; min-width: 0; overflow: hidden; } .tl-head .tick { position: absolute; top: 6px; transform: translateX(-50%); font-size: var(--fs-xs); color: var(--text-tertiary); }
+.tl-canvas { position: relative; min-width: 0; overflow: hidden; } .tl-head .tick { position: absolute; top: 6px; transform: translateX(-50%); white-space: nowrap; font-size: var(--fs-xs); color: var(--text-tertiary); }
 .grid { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--line-subtle); }
 .tl-conc { height: 44px; border-bottom: 1px solid var(--line-subtle); } .tl-conc .tl-label { flex-direction: column; align-items: flex-start; justify-content: center; gap: 0; padding-left: var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }
 .tl-conc svg { position: absolute; inset: 6px 0 0; width: 100%; height: calc(100% - 6px); } .tl-conc path { fill: var(--surface-active); stroke: var(--text-tertiary); stroke-width: 1; vector-effect: non-scaling-stroke; }

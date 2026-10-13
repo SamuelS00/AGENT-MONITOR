@@ -30,7 +30,7 @@ export function Val<T>({ m, fmt, verbose = false, lowerBound = false }: { m: Met
     return <span className="val val-na" title={`Unavailable${m.source ? ` · ${m.source}` : ""}`} aria-label="Unavailable">{verbose ? "Unavailable" : "—"}</span>;
   const text = fmt(m.value);
   if (m.reliability === "inferred")
-    return <span className="val val-est" title={`Estimated${m.source ? ` · ${m.source}` : ""}`}><span aria-hidden>{lowerBound ? "≥" : "≈"}</span>{text}<span className="sr-only"> (estimated)</span></span>;
+    return <span className="val val-est" title={`Inferred or estimated${m.source ? ` · ${m.source}` : ""}`}><span aria-hidden>{lowerBound ? "≥" : "≈"}</span>{text}<span className="sr-only"> (estimated)</span></span>;
   return <span className="val" title={m.source ? `Confirmed · ${m.source}` : undefined}>{lowerBound && <span aria-hidden title="Lower bound: some agents report no usage">≥</span>}{text}</span>;
 }
 

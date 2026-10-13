@@ -1,3 +1,4 @@
+mod adapters;
 mod collector;
 mod domain;
 mod storage;
@@ -38,7 +39,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let storage = Storage::open(app.handle()).map_err(|error| std::io::Error::other(error))?;
-            app.manage(AppState { collector: Collector, storage: Mutex::new(storage), latest: Mutex::new(None) });
+            app.manage(AppState { collector: Collector::default(), storage: Mutex::new(storage), latest: Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![monitor_snapshot, refresh_collector])

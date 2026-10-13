@@ -59,8 +59,9 @@ export function Inspector() {
           <Row k="Duration" mono>{node.startedAt === undefined ? <span className="val val-na">Unavailable</span> : <Val m={dur} fmt={fmtDuration} verbose />}</Row>
           <Row k="Started" mono>{node.startedAt ? `${fmtClock(node.startedAt)} · ${fmtAgo(node.startedAt, now)}` : <span className="val val-na">Unavailable</span>}</Row>
           {node.endedAt && <Row k="Ended" mono>{fmtClock(node.endedAt)}</Row>}
+          {node.lastActivityAt && <Row k="Last activity" mono>{fmtAgo(node.lastActivityAt, now)}</Row>}
           <Row k="Tokens (own)" mono><Val m={node.tokens} fmt={fmtTokens} verbose /></Row>
-          {node.tokensIn && <Row k="  input" mono><Val m={node.tokensIn} fmt={fmtTokens} verbose /></Row>}
+          {node.tokensIn && <Row k="  input (incl. cache)" mono><Val m={node.tokensIn} fmt={fmtTokens} verbose /></Row>}
           {node.tokensOut && <Row k="  output" mono><Val m={node.tokensOut} fmt={fmtTokens} verbose /></Row>}
           {kids.length > 0 && <Row k="Tokens (subtree)" mono><Val m={roll.tokens} fmt={fmtTokens} verbose lowerBound={roll.partial} /></Row>}
         </dl>

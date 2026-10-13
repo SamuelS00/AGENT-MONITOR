@@ -34,6 +34,14 @@ pub struct ExecutionNode {
     pub started_at: Option<String>,
     pub tokens: Option<u64>,
     pub relationship: Reliability,
+    /// Reliability of `model`; `Unavailable` when no adapter could read it.
+    pub model_reliability: Reliability,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    /// Reliability of the token counters. `Inferred` when the transcript was matched by working directory only.
+    pub usage_reliability: Reliability,
+    pub usage_source: Option<String>,
+    pub last_activity_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,6 +64,8 @@ mod tests {
             label: "Fixture child".into(), tool: "Codex".into(), model: None,
             status: ExecutionStatus::Unknown, started_at: None, tokens: None,
             relationship: Reliability::Inferred,
+            model_reliability: Reliability::Unavailable, tokens_in: None, tokens_out: None,
+            usage_reliability: Reliability::Unavailable, usage_source: None, last_activity_at: None,
         };
         let value = serde_json::to_value(node).expect("serialize fixture");
         assert!(value["tokens"].is_null());
