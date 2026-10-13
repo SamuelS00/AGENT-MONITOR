@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ModelBadge } from "./ModelBadge";
 import { useStore } from "../app/store";
 import { ancestors, durationMs, parallelIds, rollupTokens } from "../model/tree";
 import { fmtAgo, fmtClock, fmtDuration, fmtTokens } from "../model/format";
@@ -48,7 +49,8 @@ export function Inspector() {
       <Section title="Overview">
         <dl>
           <Row k="Tool">{node.tool}</Row>
-          <Row k="Model" mono><Val m={node.model} fmt={String} verbose /></Row>
+          <Row k="Model"><ModelBadge node={node} /></Row>
+          {node.provider && <Row k="Provider" mono><Val m={node.provider} fmt={String} verbose /></Row>}
           <Row k="Project">{project ? <span title={project.path}>{project.name}</span> : <span className="val val-na">Unavailable</span>}</Row>
           <Row k="Source">{node.source}</Row>
         </dl>
@@ -62,7 +64,11 @@ export function Inspector() {
           {node.lastActivityAt && <Row k="Last activity" mono>{fmtAgo(node.lastActivityAt, now)}</Row>}
           <Row k="Tokens (own)" mono><Val m={node.tokens} fmt={fmtTokens} verbose /></Row>
           {node.tokensIn && <Row k="  input (incl. cache)" mono><Val m={node.tokensIn} fmt={fmtTokens} verbose /></Row>}
-          {node.tokensOut && <Row k="  output" mono><Val m={node.tokensOut} fmt={fmtTokens} verbose /></Row>}
+          {node.cacheReadTokens && <Row k="    cache read" mono><Val m={node.cacheReadTokens} fmt={fmtTokens} verbose /></Row>}
+          {node.cacheWriteTokens && <Row k="    cache write" mono><Val m={node.cacheWriteTokens} fmt={fmtTokens} verbose /></Row>}
+          {node.tokensOut && <Row k="  output (incl. reasoning)" mono><Val m={node.tokensOut} fmt={fmtTokens} verbose /></Row>}
+          {node.reasoningTokens && <Row k="    reasoning" mono><Val m={node.reasoningTokens} fmt={fmtTokens} verbose /></Row>}
+          {node.costUsd && <Row k="Cost (reported by tool)" mono><Val m={node.costUsd} fmt={(n) => `$${n.toFixed(n < 1 ? 4 : 2)}`} verbose /></Row>}
           {kids.length > 0 && <Row k="Tokens (subtree)" mono><Val m={roll.tokens} fmt={fmtTokens} verbose lowerBound={roll.partial} /></Row>}
         </dl>
         {kids.length > 0 && <p className="hint">Subtree sums each agent's own usage once. Parents do not include child usage.</p>}

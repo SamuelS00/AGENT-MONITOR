@@ -21,6 +21,22 @@ pub struct ObservedProcess {
     pub reliability: Reliability,
 }
 
+/// Optional usage breakdown. Every field is `None` when the source does not report it, never zero.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDetail {
+    pub provider: Option<String>,
+    /// Reasoning effort / variant as recorded by the tool.
+    pub effort: Option<String>,
+    /// Subset of `tokens_in`.
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    /// Subset of `tokens_out`.
+    pub reasoning_tokens: Option<u64>,
+    /// USD cost as reported by the tool; never computed by the monitor.
+    pub cost_usd: Option<f64>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionNode {
@@ -41,6 +57,8 @@ pub struct ExecutionNode {
     /// Reliability of the token counters. `Inferred` when the transcript was matched by working directory only.
     pub usage_reliability: Reliability,
     pub usage_source: Option<String>,
+    #[serde(flatten)]
+    pub detail: UsageDetail,
     pub last_activity_at: Option<String>,
 }
 
@@ -65,11 +83,12 @@ mod tests {
             status: ExecutionStatus::Unknown, started_at: None, tokens: None,
             relationship: Reliability::Inferred,
             model_reliability: Reliability::Unavailable, tokens_in: None, tokens_out: None,
-            usage_reliability: Reliability::Unavailable, usage_source: None, last_activity_at: None,
+            usage_reliability: Reliability::Unavailable, usage_source: None, detail: UsageDetail::default(), last_activity_at: None,
         };
         let value = serde_json::to_value(node).expect("serialize fixture");
         assert!(value["tokens"].is_null());
         assert!(value["model"].is_null());
+        assert!(value["costUsd"].is_null() && value["provider"].is_null() && value["effort"].is_null());
         assert_eq!(value["relationship"], "inferred");
     }
 }

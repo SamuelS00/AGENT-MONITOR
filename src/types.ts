@@ -28,6 +28,13 @@ export interface ExecutionNode {
   tokensOut?: number;
   usageReliability?: SourceReliability;
   usageSource?: string;
+  provider?: string;
+  effort?: string;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  /** USD as reported by the tool itself; never computed by the monitor. */
+  costUsd?: number;
   lastActivityAt?: string;
 }
 

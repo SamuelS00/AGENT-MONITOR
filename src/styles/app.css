@@ -53,6 +53,9 @@ body.resizing { cursor: col-resize; } body.resizing * { pointer-events: none; }
 .search-trigger:hover { border-color: var(--line-default); } .search-trigger span { flex: 1; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: var(--r-sm); color: var(--text-secondary); transition: background var(--dur-fast); }
 .icon-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); } .icon-btn:active:not(:disabled) { background: var(--surface-active); } .icon-btn.on { color: var(--accent); } .icon-btn:disabled { opacity: 0.4; }
+.mbadge { --brand: var(--text-tertiary); display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 20px; padding: 0 var(--sp-3); border-radius: 10px; border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent); background: color-mix(in srgb, var(--brand) 14%, transparent); color: color-mix(in srgb, var(--brand) 72%, var(--text-primary)); font-size: var(--fs-xs); font-weight: 500; white-space: nowrap; vertical-align: middle; }
+.mbadge svg { flex: none; color: var(--brand); } .mbadge-name { overflow: hidden; text-overflow: ellipsis; } .mbadge-ver { font-family: var(--font-mono); opacity: 0.85; } .mbadge-eff { padding: 0 5px; border-radius: 8px; background: color-mix(in srgb, var(--brand) 24%, transparent); font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.03em; }
+.mbadge-compact { height: 18px; padding: 0 5px; }
 .chip { display: inline-flex; align-items: center; gap: var(--sp-3); height: 20px; padding: 0 var(--sp-3); border-radius: 10px; border: 1px dashed var(--line-strong); color: var(--text-secondary); font-size: var(--fs-xs); font-weight: 500; white-space: nowrap; }
 .chip-link { color: var(--accent); font-size: var(--fs-xs); } .chip-link:hover { text-decoration: underline; } .chip-btn:hover { background: var(--surface-hover); }
 

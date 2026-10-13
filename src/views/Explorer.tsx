@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo, useRef } from "react";
+import { ModelBadge } from "../ui/ModelBadge";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, ListTree } from "lucide-react";
 import { useStore } from "../app/store";
 import { descendants, durationMs, parallelIds, rollupTokens, visibleRows, type Row } from "../model/tree";
@@ -130,7 +131,7 @@ function Tree({ rootId }: { rootId: string }) {
               {!r.open && r.hasChildren && <span className="muted collapsed-n">{kids.length}</span>}
               {n.status === "waiting" && n.activity && <span className="sub trunc">{n.activity}</span>}
             </span>
-            <span className="mono trunc"><Val m={n.model} fmt={String} /></span>
+            <span className="trunc"><ModelBadge node={n} compact /></span>
             <span className="num mono"><Val m={roll.tokens} fmt={fmtTokens} lowerBound={roll.partial && roll.tokens.reliability !== "unavailable"} /></span>
             <span className="num mono"><Val m={dur} fmt={fmtDuration} /></span>
           </div>

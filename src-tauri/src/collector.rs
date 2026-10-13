@@ -1,5 +1,5 @@
 use crate::adapters::{self, SessionUsage, TranscriptFile};
-use crate::domain::{ExecutionNode, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability};
+use crate::domain::{ExecutionNode, ExecutionStatus, MonitorSnapshot, UsageDetail, ObservedProcess, Reliability};
 use chrono::{DateTime, Utc};
 use std::{
     collections::HashMap,
@@ -93,7 +93,7 @@ impl Collector {
                 id: format!("execution:{process_id}"), parent_id: None, process_id: Some(process_id), label, tool: item.tool.into(), model: None,
                 status: ExecutionStatus::Running, started_at: Some(started_at), tokens: None, relationship: Reliability::Confirmed,
                 model_reliability: Reliability::Unavailable, tokens_in: None, tokens_out: None, usage_reliability: Reliability::Unavailable,
-                usage_source: None, last_activity_at: None,
+                usage_source: None, detail: UsageDetail::default(), last_activity_at: None,
             };
             if let Some((usage, reliability, source, modified)) = linked {
                 apply_usage(&mut node, &usage, reliability, source);
@@ -114,7 +114,7 @@ impl Collector {
                 id, parent_id: None, process_id: None, label: "Codex local session artifact".into(), tool: "Codex".into(), model: None,
                 status: ExecutionStatus::Unknown, started_at: modified.map(DateTime::<Utc>::from).map(|time| time.to_rfc3339()), tokens: None,
                 relationship: Reliability::Unavailable, model_reliability: Reliability::Unavailable, tokens_in: None, tokens_out: None,
-                usage_reliability: Reliability::Unavailable, usage_source: None, last_activity_at: None,
+                usage_reliability: Reliability::Unavailable, usage_source: None, detail: UsageDetail::default(), last_activity_at: None,
             };
             if let Some(usage) = usage {
                 apply_usage(&mut node, &usage, Reliability::Confirmed, "Codex rollout file".into());
@@ -139,6 +139,7 @@ impl Collector {
     /// Pair a process with the newest unclaimed transcript of the same tool and working directory.
     /// Confirmed only when the command line names the session id; otherwise the pairing is inferred.
     fn link_usage(&self, item: &Seen, cwd: &Path, claimed: &mut Vec<PathBuf>) -> Option<(SessionUsage, Reliability, String, SystemTime)> {
+        if item.tool == "OpenCode" { return self.link_opencode(item, cwd, claimed); }
         let (candidates, parse, source): (Vec<TranscriptFile>, fn(&TranscriptFile) -> Option<SessionUsage>, &str) = match item.tool {
             "Claude Code" => (adapters::claude_transcripts(cwd), adapters::parse_claude, "Claude Code transcript"),
             "Codex" => (adapters::codex_transcripts(cwd), adapters::parse_codex, "Codex rollout file"),
@@ -152,6 +153,19 @@ impl Collector {
         let (reliability, how) = if named { (Reliability::Confirmed, "session id in command") } else { (Reliability::Inferred, "matched by working directory") };
         Some((usage, reliability, format!("{source} ({how})"), file.modified))
     }
+
+    /// OpenCode stores sessions in SQLite. The pairing rules match the transcript adapters: same working
+    /// directory, updated after the process started, one session per process, confirmed only by session id.
+    fn link_opencode(&self, item: &Seen, cwd: &Path, claimed: &mut Vec<PathBuf>) -> Option<(SessionUsage, Reliability, String, SystemTime)> {
+        let db = adapters::opencode_db_path()?;
+        let floor_ms = item.start.saturating_sub(START_SLACK.as_secs()) * 1000;
+        let session = adapters::opencode_sessions(&db, cwd, floor_ms).into_iter().find(|s| !claimed.contains(&PathBuf::from(format!("opencode:{}", s.id))))?;
+        claimed.push(PathBuf::from(format!("opencode:{}", session.id)));
+        let named = item.command.contains(&session.id);
+        let (reliability, how) = if named { (Reliability::Confirmed, "session id in command") } else { (Reliability::Inferred, "matched by working directory") };
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(session.updated_ms);
+        Some((session.usage, reliability, format!("OpenCode database ({how})"), modified))
+    }
 }
 
 fn apply_usage(node: &mut ExecutionNode, usage: &SessionUsage, reliability: Reliability, source: String) {
@@ -164,6 +178,10 @@ fn apply_usage(node: &mut ExecutionNode, usage: &SessionUsage, reliability: Reli
         node.tokens_out = usage.tokens_out;
         node.tokens = Some(usage.tokens_in.unwrap_or(0) + usage.tokens_out.unwrap_or(0));
         node.usage_reliability = reliability;
+        node.detail = UsageDetail {
+            provider: usage.provider.clone(), effort: usage.effort.clone(), cache_read_tokens: usage.cache_read, cache_write_tokens: usage.cache_write,
+            reasoning_tokens: usage.reasoning, cost_usd: usage.cost_usd,
+        };
     }
     node.usage_source = Some(source);
 }

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { ModelBadge } from "../ui/ModelBadge";
 import { useStore } from "../app/store";
 import { descendants, durationMs, rollupTokens, sessionStatus } from "../model/tree";
 import { fmtDuration, fmtTokens } from "../model/format";
@@ -80,7 +81,7 @@ export function Monitor() {
                       ]); }}>
                       <span role="cell" className="c-status"><StatusGlyph status={status} /></span>
                       <span role="cell" className="c-main"><span className="title trunc">{s.title}</span>{isActive(status) && (running > 0 || waiting > 0 || root.activity) && <span className="sub trunc">{[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`].filter(Boolean).join(", ")}{(running > 0 || waiting > 0) && root.activity ? " · " : ""}{root.activity}</span>}</span>
-                      <span role="cell" className="c-main c-tool"><span className="trunc">{root.tool}</span><span className="sub mono trunc"><Val m={root.model} fmt={String} /></span></span>
+                      <span role="cell" className="c-main c-tool"><span className="trunc">{root.tool}</span><span className="sub trunc"><ModelBadge node={root} compact /></span></span>
                       <span role="cell" className="num mono">{agents}</span>
                       <span role="cell" className="num mono"><Val m={dur} fmt={fmtDuration} /></span>
                       <span role="cell" className="num mono"><Val m={roll.tokens} fmt={fmtTokens} lowerBound={roll.partial && roll.tokens.reliability !== "unavailable"} /></span>

@@ -32,6 +32,12 @@ export interface AgentNode {
   tokens: Metric<number>;
   tokensIn?: Metric<number>;
   tokensOut?: Metric<number>;
+  provider?: Metric<string>;
+  effort?: Metric<string>;
+  cacheReadTokens?: Metric<number>;
+  cacheWriteTokens?: Metric<number>;
+  reasoningTokens?: Metric<number>;
+  costUsd?: Metric<number>;
   activity?: string;
   /** Reliability of the edge to the parent. "inferred" = never presented as confirmed delegation. */
   relationship: SourceReliability;

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ModelBadge } from "../ui/ModelBadge";
 import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -16,7 +17,7 @@ function AgentCard({ data }: NodeProps<Node<Data>>) {
     <div className={`gnode st-${n.status} ${selected ? "selected" : ""} ${n.relationship !== "confirmed" ? "inferred" : ""}`}>
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="gnode-top"><StatusGlyph status={n.status} /><span className="trunc gnode-label">{n.label}</span>{par && <span className="tag tag-par" title="Ran concurrently with a sibling">∥</span>}</div>
-      <div className="gnode-meta mono trunc"><Val m={n.model} fmt={String} /></div>
+      <div className="gnode-meta"><ModelBadge node={n} compact /></div>
       <div className="gnode-meta"><span className="trunc">{n.tool}</span><span className="grow" /><span className="mono"><Val m={tokens.tokens} fmt={fmtTokens} lowerBound={tokens.partial && tokens.tokens.reliability !== "unavailable"} /></span></div>
       {hasChildren && <button className="gnode-toggle nodrag" aria-label={open ? "Collapse" : "Expand"} onClick={(e) => { e.stopPropagation(); onToggle(); }}>{open ? <ChevronDown size={12} /> : <><ChevronRight size={12} />{kids}</>}</button>}
       <Handle type="source" position={Position.Right} isConnectable={false} />
