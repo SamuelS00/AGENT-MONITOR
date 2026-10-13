@@ -12,6 +12,7 @@ A quiet, native-feeling macOS tool for reading what AI agents are doing right no
 - **Navigation** from Things 3 and **speed** from Raycast: persistent sidebar, `⌘K` palette, visible shortcuts.
 
 ### Principles
+
 1. **Evidence over decoration.** Every value says where it came from (confirmed, estimated, unavailable).
 2. **Lists before cards.** Rows, trees and tables carry data. No floating KPI cards.
 3. **Color is a second channel.** Status = glyph shape + word + color. Accent = selection and focus only.
@@ -23,17 +24,17 @@ A quiet, native-feeling macOS tool for reading what AI agents are doing right no
 
 Components consume **semantic** tokens only. Never write a hex value in a component.
 
-| Group | Tokens |
-| --- | --- |
-| Surface | `--surface-sidebar/content/raised/inspector/sunken`, `--surface-hover/active/selected/selected-inactive` |
-| Line | `--line-subtle/default/strong` |
-| Text | `--text-primary/secondary/tertiary/on-accent` (tertiary is for metadata, never the only carrier of meaning) |
-| Accent | `--accent`, `--accent-solid`, `--accent-ring` |
-| Status | `--status-{running,waiting,failed,completed,disconnected,idle,unknown}` plus `*-bg` tints |
-| Type | `--font-sans` (SF Pro via system), `--font-mono` (SF Mono); `--fs-2xs…xl` = 10.5 / 11 / 12 / 13 / 15 / 20 |
-| Space | `--sp-0…6` = 2 / 4 / 6 / 8 / 12 / 16 / 24 |
-| Radius | `--r-xs/sm/md/lg` = 3 / 5 / 7 / 10 |
-| Motion | `--dur-fast` 90ms, `--dur` 160ms, `--ease` cubic-bezier(.2,.8,.2,1) |
+| Group   | Tokens                                                                                                      |
+| ------- | ----------------------------------------------------------------------------------------------------------- |
+| Surface | `--surface-sidebar/content/raised/inspector/sunken`, `--surface-hover/active/selected/selected-inactive`    |
+| Line    | `--line-subtle/default/strong`                                                                              |
+| Text    | `--text-primary/secondary/tertiary/on-accent` (tertiary is for metadata, never the only carrier of meaning) |
+| Accent  | `--accent`, `--accent-solid`, `--accent-ring`                                                               |
+| Status  | `--status-{running,waiting,failed,completed,disconnected,idle,unknown}` plus `*-bg` tints                   |
+| Type    | `--font-sans` (SF Pro via system), `--font-mono` (SF Mono); `--fs-2xs…xl` = 10.5 / 11 / 12 / 13 / 15 / 20   |
+| Space   | `--sp-0…6` = 2 / 4 / 6 / 8 / 12 / 16 / 24                                                                   |
+| Radius  | `--r-xs/sm/md/lg` = 3 / 5 / 7 / 10                                                                          |
+| Motion  | `--dur-fast` 90ms, `--dur` 160ms, `--ease` cubic-bezier(.2,.8,.2,1)                                         |
 
 Light is the default (warm paper neutrals). Dark overrides the same names under `:root[data-theme="dark"]`; JS resolves "System" to light/dark and writes `data-theme`. Density is `data-density="compact"` and only changes `--row-h`.
 
@@ -41,43 +42,43 @@ Monospace is for technical strings: model ids, ids, paths, numbers (tabular figu
 
 ## 3. Status and reliability
 
-| Status | Glyph | Meaning |
-| --- | --- | --- |
-| running | filled dot with pulsing ring | actively executing |
-| waiting | half-filled circle | blocked on approval, input or another agent |
-| completed | check | finished normally |
-| failed | filled rounded square with ✕ | ended with an error |
-| disconnected | dashed circle | process lost; final state unknown |
-| idle / unknown | hollow circle / hollow diamond | alive but quiet / undetermined |
+| Status         | Glyph                          | Meaning                                     |
+| -------------- | ------------------------------ | ------------------------------------------- |
+| running        | filled dot with pulsing ring   | actively executing                          |
+| waiting        | half-filled circle             | blocked on approval, input or another agent |
+| completed      | check                          | finished normally                           |
+| failed         | filled rounded square with ✕   | ended with an error                         |
+| disconnected   | dashed circle                  | process lost; final state unknown           |
+| idle / unknown | hollow circle / hollow diamond | alive but quiet / undetermined              |
 
 Data reliability mirrors `SourceReliability` in `src/types.ts`:
 
-| Value | Rendering | Rule |
-| --- | --- | --- |
-| confirmed | plain | read from the tool's own record |
-| inferred / estimated | `≈` prefix + dotted underline | derived; tooltip names the source |
-| unavailable | `—` in tables, the word "Unavailable" in the inspector | **never** shown as 0 |
-| lower bound | `≥` prefix | a sum where some members are unavailable |
+| Value                | Rendering                                              | Rule                                     |
+| -------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| confirmed            | plain                                                  | read from the tool's own record          |
+| inferred / estimated | `≈` prefix + dotted underline                          | derived; tooltip names the source        |
+| unavailable          | `—` in tables, the word "Unavailable" in the inspector | **never** shown as 0                     |
+| lower bound          | `≥` prefix                                             | a sum where some members are unavailable |
 
 Relationships: confirmed delegation draws a solid guide line; an inferred edge draws a dotted line plus an `inferred` tag. **Process ancestry alone is never rendered as delegation.**
 
-Token rollups sum each agent's *own* usage once (`rollupTokens` in `src/model/tree.ts`). Parents never include child usage, so nothing is double counted.
+Token rollups sum each agent's _own_ usage once (`rollupTokens` in `src/model/tree.ts`). Parents never include child usage, so nothing is double counted.
 
 ## 4. Components
 
-| Component | File | Variants / states |
-| --- | --- | --- |
-| `StatusGlyph` | `ui/primitives.tsx` | 7 statuses, optional label |
-| `Val` | same | confirmed, estimated, unavailable, lower bound, `verbose` |
-| `Segmented` | same | on/off, with icons |
-| `Menu` / `useMenu` | same | context menu and anchored picker, keyboard nav, checked, disabled, separators |
-| `Banner`, `EmptyState`, `SkeletonRows` | same | info/warn/error; empty; loading |
-| `Resizer` | same | drag, double-click to reset |
-| `Sidebar`, `Toolbar` | `ui/Shell.tsx` | resizable sidebar (172–320), drag region, `⌘\` collapse |
-| `Inspector` | `ui/Inspector.tsx` | agent, history session, empty; resizable (260–560) |
-| `CommandPalette` | `ui/CommandPalette.tsx` | `⌘K`; views, actions, agents |
-| Tree rows | `views/Explorer.tsx` | default, hover, selected, selected-unfocused, collapsed, parallel, inferred |
-| Graph node | `views/Graph.tsx` | status, selected, inferred (dashed), collapsed count |
+| Component                              | File                    | Variants / states                                                             |
+| -------------------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| `StatusGlyph`                          | `ui/primitives.tsx`     | 7 statuses, optional label                                                    |
+| `Val`                                  | same                    | confirmed, estimated, unavailable, lower bound, `verbose`                     |
+| `Segmented`                            | same                    | on/off, with icons                                                            |
+| `Menu` / `useMenu`                     | same                    | context menu and anchored picker, keyboard nav, checked, disabled, separators |
+| `Banner`, `EmptyState`, `SkeletonRows` | same                    | info/warn/error; empty; loading                                               |
+| `Resizer`                              | same                    | drag, double-click to reset                                                   |
+| `Sidebar`, `Toolbar`                   | `ui/Shell.tsx`          | resizable sidebar (172–320), drag region, `⌘\` collapse                       |
+| `Inspector`                            | `ui/Inspector.tsx`      | agent, history session, empty; resizable (260–560)                            |
+| `CommandPalette`                       | `ui/CommandPalette.tsx` | `⌘K`; views, actions, agents                                                  |
+| Tree rows                              | `views/Explorer.tsx`    | default, hover, selected, selected-unfocused, collapsed, parallel, inferred   |
+| Graph node                             | `views/Graph.tsx`       | status, selected, inferred (dashed), collapsed count                          |
 
 Row states: hover = `--surface-hover`; selected = `--surface-selected` when the list has focus, `--surface-selected-inactive` otherwise. Focus ring = `--accent-ring`.
 

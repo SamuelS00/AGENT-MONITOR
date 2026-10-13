@@ -17,14 +17,26 @@ struct AppState {
 
 fn collect(state: &AppState) -> Result<MonitorSnapshot, String> {
     let snapshot = state.collector.collect();
-    state.storage.lock().map_err(|_| "storage lock unavailable".to_string())?.save_snapshot(&snapshot)?;
-    *state.latest.lock().map_err(|_| "snapshot lock unavailable".to_string())? = Some(snapshot.clone());
+    state
+        .storage
+        .lock()
+        .map_err(|_| "storage lock unavailable".to_string())?
+        .save_snapshot(&snapshot)?;
+    *state
+        .latest
+        .lock()
+        .map_err(|_| "snapshot lock unavailable".to_string())? = Some(snapshot.clone());
     Ok(snapshot)
 }
 
 #[tauri::command]
 fn monitor_snapshot(state: State<'_, AppState>) -> Result<MonitorSnapshot, String> {
-    if let Some(snapshot) = state.latest.lock().map_err(|_| "snapshot lock unavailable".to_string())?.clone() {
+    if let Some(snapshot) = state
+        .latest
+        .lock()
+        .map_err(|_| "snapshot lock unavailable".to_string())?
+        .clone()
+    {
         return Ok(snapshot);
     }
     collect(&state)
@@ -38,8 +50,12 @@ fn refresh_collector(state: State<'_, AppState>) -> Result<MonitorSnapshot, Stri
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let storage = Storage::open(app.handle()).map_err(|error| std::io::Error::other(error))?;
-            app.manage(AppState { collector: Collector::default(), storage: Mutex::new(storage), latest: Mutex::new(None) });
+            let storage = Storage::open(app.handle()).map_err(std::io::Error::other)?;
+            app.manage(AppState {
+                collector: Collector::default(),
+                storage: Mutex::new(storage),
+                latest: Mutex::new(None),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![monitor_snapshot, refresh_collector])

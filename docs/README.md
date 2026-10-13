@@ -1,5 +1,6 @@
 # Documentation map
 
+- `tooling.md`: linting, formatting, testing, commit and CI tooling, and the commands that enforce them.
 - `architecture/`: stable design and collector/data contracts.
 - `adr/`: decisions that constrain future implementation.
 - `specs/`: acceptance-oriented product slices.
