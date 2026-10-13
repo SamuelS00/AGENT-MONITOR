@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.vite/
+src-tauri/target/
+src-tauri/gen/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.env
+.env.*
+!.env.example
+coverage/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
