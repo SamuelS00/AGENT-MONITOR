@@ -1,3 +1,5 @@
+# Quality gates for the agent monitor: types, lint, format and tests for the
+# frontend; rustfmt, clippy and tests for the Rust backend.
 name: CI
 
 on:
