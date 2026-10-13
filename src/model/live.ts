@@ -33,12 +33,29 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
   });
   const idx = buildIndex(nodes);
   const projectFor = (n: AgentNode): Project => {
-    const proc = procById.get(s.executions.find((e) => e.id === n.id)?.processId ?? "");
+    const proc = procById.get(byId.get(n.id)?.processId ?? "");
     const path = proc?.projectPath;
     return path && path !== "/" ? { id: path, name: baseName(path) ?? path, path } : { id: "unknown", name: "Unknown project" };
   };
   const projects = new Map<string, Project>();
-  const sessions: Session[] = idx.roots.map((r) => {
+  // A process is the unit of observation for live work. Some adapters can emit
+  // more than one root execution while enriching the same process with
+  // different metadata. Listing each root would make one running process look
+  // like several active sessions in a project. Keep the first root for a
+  // process (the snapshot order is authoritative), while executions without a
+  // process association remain separate because there is no evidence that they
+  // are the same run.
+  const sessionRoots = (() => {
+    const seenProcessIds = new Set<string>();
+    return idx.roots.filter((root) => {
+      const processId = byId.get(root.id)?.processId;
+      if (!processId) return true;
+      if (seenProcessIds.has(processId)) return false;
+      seenProcessIds.add(processId);
+      return true;
+    });
+  })();
+  const sessions: Session[] = sessionRoots.map((r) => {
     const p = projectFor(r); projects.set(p.id, p);
     return { id: r.id, projectId: p.id, title: r.label, rootId: r.id };
   });
