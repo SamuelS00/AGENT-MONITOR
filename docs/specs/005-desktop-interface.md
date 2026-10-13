@@ -1,7 +1,7 @@
 # SPEC 005: Desktop interface
 
 ## Objective and scope
-Provide a clean desktop Monitor, Execution Explorer and details panel; excludes analytics dashboards.
+Provide Monitor, Execution Explorer (tree and graph), Timeline, History & Analytics and Settings with a shared inspector and command palette. Visual rules live in `docs/design/design-system.md`.
 
 ## Requirements and rules
 Support dark/light system appearance, progressive disclosure and understandable empty/error states.

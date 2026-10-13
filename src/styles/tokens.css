@@ -1,0 +1,131 @@
+/* Agent Monitor design tokens. Semantic only: components never use raw values.
+   Light is the default; dark overrides under [data-theme="dark"] (set by JS). */
+:root {
+  color-scheme: light;
+
+  /* Type */
+  --font-sans: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --fs-2xs: 10.5px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 20px;
+  --lh-tight: 1.25;
+  --lh-body: 1.45;
+
+  /* Space (4px grid, 2px half-step) */
+  --sp-0: 2px;
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 24px;
+
+  /* Radius: small on purpose */
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 10px;
+
+  /* Layout metrics */
+  --row-h: 28px;
+  --toolbar-h: 44px;
+  --traffic-w: 76px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 90ms;
+  --dur: 160ms;
+
+  /* Surfaces */
+  --surface-sidebar: #efede5;
+  --surface-content: #faf9f5;
+  --surface-raised: #ffffff;
+  --surface-inspector: #f5f3ec;
+  --surface-sunken: #f1efe8;
+  --surface-hover: rgb(31 30 29 / 0.05);
+  --surface-active: rgb(31 30 29 / 0.09);
+  --surface-selected: rgb(196 87 58 / 0.12);
+  --surface-selected-inactive: rgb(31 30 29 / 0.08);
+  --scrim: rgb(31 30 29 / 0.28);
+
+  /* Lines */
+  --line-subtle: rgb(31 30 29 / 0.075);
+  --line-default: rgb(31 30 29 / 0.13);
+  --line-strong: rgb(31 30 29 / 0.24);
+
+  /* Text */
+  --text-primary: #1f1e1d;
+  --text-secondary: #5c5951;
+  --text-tertiary: #78746b;
+  --text-on-accent: #ffffff;
+
+  /* Accent: clay. Used for selection, focus, and the single primary action. */
+  --accent: #b84e31;
+  --accent-solid: #c4573a;
+  --accent-ring: rgb(196 87 58 / 0.45);
+
+  /* Status: muted; always paired with a distinct glyph shape and a text label. */
+  --status-running: #2d8a57;
+  --status-waiting: #a8710f;
+  --status-failed: #b3283f;
+  --status-completed: #78746b;
+  --status-disconnected: #78746b;
+  --status-idle: #78746b;
+  --status-unknown: #78746b;
+  --status-running-bg: rgb(45 138 87 / 0.13);
+  --status-waiting-bg: rgb(168 113 15 / 0.14);
+  --status-failed-bg: rgb(179 40 63 / 0.12);
+  --status-neutral-bg: rgb(31 30 29 / 0.07);
+
+  --shadow-pop: 0 0 0 0.5px rgb(31 30 29 / 0.18), 0 8px 24px rgb(31 30 29 / 0.14), 0 2px 6px rgb(31 30 29 / 0.08);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-sidebar: #181715;
+  --surface-content: #1e1d1a;
+  --surface-raised: #262522;
+  --surface-inspector: #1b1a18;
+  --surface-sunken: #171614;
+  --surface-hover: rgb(255 245 230 / 0.055);
+  --surface-active: rgb(255 245 230 / 0.1);
+  --surface-selected: rgb(224 128 94 / 0.16);
+  --surface-selected-inactive: rgb(255 245 230 / 0.09);
+  --scrim: rgb(0 0 0 / 0.5);
+
+  --line-subtle: rgb(255 245 230 / 0.07);
+  --line-default: rgb(255 245 230 / 0.13);
+  --line-strong: rgb(255 245 230 / 0.26);
+
+  --text-primary: #ece8df;
+  --text-secondary: #aca79b;
+  --text-tertiary: #8d887d;
+  --text-on-accent: #1e1d1a;
+
+  --accent: #e58a68;
+  --accent-solid: #e08060;
+  --accent-ring: rgb(229 138 104 / 0.5);
+
+  --status-running: #5fc08a;
+  --status-waiting: #dca847;
+  --status-failed: #f07f8f;
+  --status-completed: #8d887d;
+  --status-disconnected: #8d887d;
+  --status-idle: #8d887d;
+  --status-unknown: #8d887d;
+  --status-running-bg: rgb(95 192 138 / 0.15);
+  --status-waiting-bg: rgb(220 168 71 / 0.16);
+  --status-failed-bg: rgb(240 127 143 / 0.15);
+  --status-neutral-bg: rgb(255 245 230 / 0.08);
+
+  --shadow-pop: 0 0 0 0.5px rgb(255 245 230 / 0.16), 0 10px 30px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+:root[data-density="compact"] {
+  --row-h: 24px;
+}

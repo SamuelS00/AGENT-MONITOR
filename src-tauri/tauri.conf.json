@@ -10,8 +10,27 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Agent Monitor", "width": 1180, "height": 780, "minWidth": 920, "minHeight": 620 }],
-    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'" }
+    "windows": [
+      {
+        "title": "Agent Monitor",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 920,
+        "minHeight": 620,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 22
+        }
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'"
+    }
   },
-  "bundle": { "active": true, "targets": "all" }
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
 }
