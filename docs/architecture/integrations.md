@@ -54,6 +54,8 @@ The `task` field carries a short title the tool recorded itself, capped at 140 c
 - A worker hangs under the worker that created it when `creator_dispatch_id` names another assignee, else under the dispatch of its parent task (`tasks.parent_id`, set by `worker-start --parent`), else under its run. Orca 1.4 fences dispatched workers from starting workers, so the coordinator records orchestrator → agent structure through `--parent`.
 - Task dependencies (`deps`) are ordering, not delegation, and are not shown as edges.
 - Orca records no model or tokens. A worker is matched to its real session by evidence: the same agent and worktree, a transcript written since the dispatch started, and one that opens with the dispatch id Orca injects in the worker prompt. The match is confirmed, and the model, tokens and subagents of that session are shown on the worker. The transcript is only searched for the id; nothing from it is kept. If a live process owns that session, its node is folded into the worker.
+- The meta-orchestrator is the session that issued the run: the one transcript or rollout (Claude Code or Codex, never a worker's own) written in the run's worktree since it began whose text names the run id. A single match is confirmed; with several, the newest is used and the edges to its orchestrators are marked inferred. When no such session is found, the run itself stays the root.
+- Levels come from the recorded structure: the meta-orchestrator above, an Orca worker with workers is an orchestrator, any other Orca worker is an agent, and a native subagent is a subagent.
 
 ## Usage breakdown fields
 

@@ -230,6 +230,43 @@ fn find_worker_session(
     from_claude().or_else(from_codex)
 }
 
+/// Sessions that could be the coordinator of an Orca run, newest first, each flagged `true` for Claude Code and
+/// `false` for Codex. A candidate is not a worker's own session, was written in one of the run's worktrees since the
+/// run began, and `mentions` its transcript names the run id.
+fn coordinator_candidates(
+    members: &[&OrcaDispatch],
+    claude: &[ClaudeSession],
+    codex: &[CodexRollout],
+    worker_paths: &[PathBuf],
+    mentions: impl Fn(&TranscriptFile) -> bool,
+) -> Vec<(TranscriptFile, bool)> {
+    let trees: Vec<&str> = members.iter().filter_map(|d| d.worktree_path.as_deref()).collect();
+    let floor = members
+        .iter()
+        .filter_map(|d| d.created_s)
+        .min()
+        .and_then(|s| u64::try_from((s - ORCA_START_SLACK_S).max(0)).ok())
+        .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
+    let eligible = |file: &TranscriptFile, cwd: Option<&str>| {
+        !worker_paths.contains(&file.path)
+            && floor.is_none_or(|floor| file.modified >= floor)
+            && (trees.is_empty() || cwd.is_none_or(|cwd| trees.contains(&cwd)))
+    };
+    let mut candidates: Vec<(TranscriptFile, bool)> = Vec::new();
+    for s in claude {
+        if eligible(&s.file, s.cwd.as_deref()) && mentions(&s.file) {
+            candidates.push((s.file.clone(), true));
+        }
+    }
+    for r in codex {
+        if eligible(&r.file, r.cwd.as_deref()) && mentions(&r.file) {
+            candidates.push((r.file.clone(), false));
+        }
+    }
+    candidates.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
+    candidates
+}
+
 fn rfc3339(seconds: i64) -> Option<String> {
     DateTime::from_timestamp(seconds, 0).map(|t| t.to_rfc3339())
 }
@@ -519,6 +556,7 @@ impl Collector {
             &owner_of_file,
             &mut node_of_session,
             seen.iter().any(|item| item.tool == "Claude Code"),
+            seen.iter().any(|item| item.tool == "Codex"),
         );
         let host_alive = |tool: &str| seen.iter().any(|item| item.tool == tool);
         let mut passive = Vec::new();
@@ -526,27 +564,8 @@ impl Collector {
             if claimed.contains(&rollout.file.path) || passive.len() >= MAX_PASSIVE_SESSIONS {
                 continue;
             }
-            let path = &rollout.file.path;
-            let mut node = ExecutionNode::new(
-                format!("codex-session:{}", path.display()),
-                rollout
-                    .cwd
-                    .as_deref()
-                    .map_or_else(|| "Codex session".into(), |cwd| dir_label(cwd, "Codex session")),
-                "Codex",
-            );
-            node.project_path = rollout.cwd.filter(|cwd| is_project_dir(Path::new(cwd)));
-            node.status = if rollout.archived {
-                ExecutionStatus::Archived
-            } else {
-                passive_status(rollout.file.modified, host_alive("Codex"))
-            };
-            node.started_at = Some(DateTime::<Utc>::from(rollout.file.modified).to_rfc3339());
-            node.last_activity_at = node.started_at.clone();
-            if let Some(usage) = self.cached(path, rollout.file.modified, rollout.file.len, adapters::parse_codex) {
-                apply_usage(&mut node, &usage, Reliability::Confirmed, "Codex rollout file".into());
-                node.started_at = usage.started_at.clone().or(node.started_at);
-                node.last_activity_at = usage.last_event_at.clone().or(node.last_activity_at);
+            let (mut node, usage) = self.codex_rollout_node(&rollout, host_alive("Codex"));
+            if let Some(usage) = usage {
                 if let Some(id) = usage.session_id.clone() {
                     node_of_session.insert(id, node.id.clone());
                 }
@@ -628,6 +647,35 @@ impl Collector {
         }
     }
 
+    /// A Codex session read from its rollout. Returns the usage too, so the caller can register the session id and
+    /// attach it to a parent when the rollout records one.
+    fn codex_rollout_node(&self, rollout: &CodexRollout, host_alive: bool) -> (ExecutionNode, Option<SessionUsage>) {
+        let path = &rollout.file.path;
+        let mut node = ExecutionNode::new(
+            format!("codex-session:{}", path.display()),
+            rollout
+                .cwd
+                .as_deref()
+                .map_or_else(|| "Codex session".into(), |cwd| dir_label(cwd, "Codex session")),
+            "Codex",
+        );
+        node.project_path = rollout.cwd.clone().filter(|cwd| is_project_dir(Path::new(cwd)));
+        node.status = if rollout.archived {
+            ExecutionStatus::Archived
+        } else {
+            passive_status(rollout.file.modified, host_alive)
+        };
+        node.started_at = Some(DateTime::<Utc>::from(rollout.file.modified).to_rfc3339());
+        node.last_activity_at = node.started_at.clone();
+        let usage = self.cached(path, rollout.file.modified, rollout.file.len, adapters::parse_codex);
+        if let Some(usage) = &usage {
+            apply_usage(&mut node, usage, Reliability::Confirmed, "Codex rollout file".into());
+            node.started_at = usage.started_at.clone().or(node.started_at);
+            node.last_activity_at = usage.last_event_at.clone().or(node.last_activity_at);
+        }
+        (node, usage)
+    }
+
     /// A Claude Code session read from its transcript, with the subagents written beside it.
     fn claude_session_node(
         &self,
@@ -682,6 +730,7 @@ impl Collector {
         owner_of_file: &HashMap<PathBuf, String>,
         node_of_session: &mut HashMap<String, String>,
         claude_host_alive: bool,
+        codex_host_alive: bool,
     ) {
         let Some(db) = adapters::orca_db_path() else {
             return;
@@ -744,30 +793,9 @@ impl Collector {
         }
         for run_id in run_ids {
             let members: Vec<&OrcaDispatch> = dispatches.iter().filter(|d| d.run_id == run_id).collect();
-            let trees: Vec<&str> = members.iter().filter_map(|d| d.worktree_path.as_deref()).collect();
-            let floor = members
-                .iter()
-                .filter_map(|d| d.created_s)
-                .min()
-                .and_then(|s| u64::try_from((s - ORCA_START_SLACK_S).max(0)).ok())
-                .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
-            let eligible = |path: &Path, modified: SystemTime, cwd: Option<&str>| {
-                !worker_paths.iter().any(|w| w == path)
-                    && floor.is_none_or(|floor| modified >= floor)
-                    && (trees.is_empty() || cwd.is_none_or(|cwd| trees.contains(&cwd)))
-            };
-            let mut candidates: Vec<(TranscriptFile, bool)> = Vec::new();
-            for s in &claude {
-                if eligible(&s.file.path, s.file.modified, s.cwd.as_deref()) && self.mentions_run(&s.file, run_id) {
-                    candidates.push((s.file.clone(), true));
-                }
-            }
-            for r in &codex {
-                if eligible(&r.file.path, r.file.modified, r.cwd.as_deref()) && self.mentions_run(&r.file, run_id) {
-                    candidates.push((r.file.clone(), false));
-                }
-            }
-            candidates.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
+            let candidates = coordinator_candidates(&members, &claude, &codex, &worker_paths, |file| {
+                self.mentions_run(file, run_id)
+            });
             let Some((file, is_claude)) = candidates.first().cloned() else {
                 continue;
             };
@@ -786,6 +814,17 @@ impl Collector {
                 let id = node.id.clone();
                 executions.push(node);
                 executions.extend(subs);
+                id
+            } else if let Some(rollout) = codex.iter().find(|r| r.file.path == file.path) {
+                // A Codex coordinator with no live process: built from its rollout. Its own session id is
+                // registered so Codex subagents found later attach to it.
+                let (node, usage) = self.codex_rollout_node(rollout, codex_host_alive);
+                claimed.push(file.path.clone());
+                if let Some(session) = usage.and_then(|u| u.session_id) {
+                    node_of_session.insert(session, node.id.clone());
+                }
+                let id = node.id.clone();
+                executions.push(node);
                 id
             } else {
                 continue;
@@ -1383,6 +1422,83 @@ mod tests {
             None,
             "a plain session has no orchestration level"
         );
+    }
+
+    #[test]
+    fn the_coordinator_may_be_a_codex_session_and_never_a_worker() {
+        let coordinator = transcript("c-codex", "{\"m\":\"run_r1 issued here\"}\n");
+        let worker = transcript("c-worker", "{\"m\":\"run_r1 appears in a worker too\"}\n");
+        let elsewhere = transcript("c-else", "{\"m\":\"run_r1 in another repo\"}\n");
+        let unrelated = transcript("c-unrelated", "{\"m\":\"nothing\"}\n");
+        let rollout = |file: &TranscriptFile, cwd: &str| CodexRollout {
+            file: file.clone(),
+            cwd: Some(cwd.into()),
+            archived: false,
+        };
+        let codex = vec![
+            rollout(&coordinator, "/repo"),
+            rollout(&worker, "/repo"),
+            rollout(&elsewhere, "/other"),
+            rollout(&unrelated, "/repo"),
+        ];
+        let mut d = dispatch("w1", "r1", None, "completed");
+        d.worktree_path = Some("/repo".into());
+        d.created_s = Some(0);
+        let mentions = |f: &TranscriptFile| adapters::mentions(&f.path, "run_r1");
+        let found = coordinator_candidates(&[&d], &[], &codex, std::slice::from_ref(&worker.path), mentions);
+        assert_eq!(
+            found.len(),
+            1,
+            "not the worker, not another repo, not a transcript that never names the run"
+        );
+        assert_eq!(found[0].0.path, coordinator.path);
+        assert!(!found[0].1, "a Codex coordinator is flagged as not Claude");
+        // Two matching sessions are both returned, so the caller can mark the edge inferred.
+        let twin = transcript("c-twin", "{\"m\":\"run_r1 again\"}\n");
+        let mut both = codex.clone();
+        both.push(rollout(&twin, "/repo"));
+        assert_eq!(
+            coordinator_candidates(&[&d], &[], &both, std::slice::from_ref(&worker.path), mentions).len(),
+            2
+        );
+        for f in [&coordinator, &worker, &elsewhere, &unrelated, &twin] {
+            let _ = std::fs::remove_file(&f.path);
+        }
+    }
+
+    #[test]
+    fn a_codex_coordinator_node_carries_its_model_usage_project_and_session_id() {
+        let body = "{\"timestamp\":\"2026-10-14T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sess-1\",\"cwd\":\"/Users/a/work/app\",\"model_provider\":\"openai\"}}\n\
+{\"timestamp\":\"2026-10-14T10:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-test\"}}\n\
+{\"timestamp\":\"2026-10-14T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":120,\"output_tokens\":30}}}}\n";
+        let file = transcript("codex-meta", body);
+        let rollout = CodexRollout {
+            file: file.clone(),
+            cwd: Some("/Users/a/work/app".into()),
+            archived: false,
+        };
+        let (node, usage) = Collector::default().codex_rollout_node(&rollout, true);
+        assert_eq!(node.label, "app");
+        assert_eq!(node.project_path.as_deref(), Some("/Users/a/work/app"));
+        assert_eq!(
+            (node.model.as_deref(), node.tokens_in, node.tokens_out),
+            (Some("gpt-test"), Some(120), Some(30))
+        );
+        assert!(matches!(node.usage_reliability, Reliability::Confirmed));
+        assert_eq!(usage.and_then(|u| u.session_id).as_deref(), Some("sess-1"));
+        // An archived rollout is archived, whatever its recency.
+        let archived = CodexRollout {
+            archived: true,
+            ..rollout
+        };
+        assert_eq!(
+            format!(
+                "{:?}",
+                Collector::default().codex_rollout_node(&archived, true).0.status
+            ),
+            "Archived"
+        );
+        let _ = std::fs::remove_file(&file.path);
     }
 
     /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator

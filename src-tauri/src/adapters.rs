@@ -112,6 +112,7 @@ pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
 }
 
 /// A recently written Codex rollout and the working directory its own `session_meta` recorded.
+#[derive(Clone)]
 pub struct CodexRollout {
     pub file: TranscriptFile,
     pub cwd: Option<String>,
