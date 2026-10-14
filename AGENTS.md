@@ -6,3 +6,8 @@
 - Add adapters behind the domain contracts; do not couple the frontend to a CLI log format.
 - Run `pnpm run check` and `cargo check --manifest-path src-tauri/Cargo.toml` before claiming validation.
 - Do not commit databases, session files, credentials, or generated artifacts.
+
+# Workflow
+
+- After finishing each item, validate it, commit it (Conventional Commits, one logical change per commit), push to the current branch and move straight to the next item without stopping.
+- Interrupt the sequence only when a decision is genuinely the user's to make or a validation fails and cannot be fixed.
