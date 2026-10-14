@@ -1,4 +1,4 @@
-use crate::adapters::{self, SessionUsage, TranscriptFile};
+use crate::adapters::{self, OrcaDispatch, SessionUsage, TranscriptFile};
 use crate::domain::{
     ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability, UsageDetail,
 };
@@ -39,6 +39,8 @@ const SAFE_SUBCOMMANDS: &[&str] = &[
     "run",
     "review",
 ];
+/// A dispatched Orca worker with no heartbeat for this long is shown as idle, not running.
+const ORCA_STALE: Duration = Duration::from_secs(10 * 60);
 const LAUNCHERS: &[&str] = &["node", "bun", "deno", "python", "python3", "npx"];
 
 type UsageCache = HashMap<PathBuf, (SystemTime, u64, SessionUsage)>;
@@ -159,6 +161,100 @@ fn attach_parents(
             node.relationship = Reliability::Confirmed;
         }
     }
+}
+
+const ORCA_SOURCE: &str = "Orca orchestration database";
+
+fn rfc3339(seconds: i64) -> Option<String> {
+    DateTime::from_timestamp(seconds, 0).map(|t| t.to_rfc3339())
+}
+
+/// A short, stable suffix so workers of one run can be told apart without reading any task text.
+fn short_id(id: &str) -> &str {
+    &id[id.len().saturating_sub(6)..]
+}
+
+fn orca_dispatch_status(dispatch: &OrcaDispatch) -> ExecutionStatus {
+    match dispatch.status.as_str() {
+        "dispatched" => match dispatch.heartbeat_s.and_then(|s| u64::try_from(s).ok()) {
+            Some(beat)
+                if age_of(SystemTime::UNIX_EPOCH + Duration::from_secs(beat)).is_some_and(|a| a > ORCA_STALE) =>
+            {
+                ExecutionStatus::Idle
+            }
+            _ => ExecutionStatus::Running,
+        },
+        "completed" => ExecutionStatus::Completed,
+        "failed" | "circuit_broken" => ExecutionStatus::Failed,
+        _ => ExecutionStatus::Waiting,
+    }
+}
+
+/// Run nodes and worker nodes from Orca's own records. A worker hangs under the worker that created it when Orca
+/// recorded that, else under its run. Tasks without a dispatch are not shown: nothing has executed them yet.
+/// No usage or model is available from this source, so those stay unavailable.
+fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
+    let mut runs: Vec<(String, Vec<&OrcaDispatch>)> = Vec::new();
+    for dispatch in dispatches {
+        match runs.iter_mut().find(|(id, _)| *id == dispatch.run_id) {
+            Some((_, members)) => members.push(dispatch),
+            None => runs.push((dispatch.run_id.clone(), vec![dispatch])),
+        }
+    }
+    let known: std::collections::HashSet<&str> = dispatches.iter().map(|d| d.id.as_str()).collect();
+    let mut out = Vec::new();
+    for (run_id, members) in runs {
+        let statuses: Vec<ExecutionStatus> = members.iter().map(|d| orca_dispatch_status(d)).collect();
+        let any = |wanted: fn(&ExecutionStatus) -> bool| statuses.iter().any(wanted);
+        let run_status = if any(|s| matches!(s, ExecutionStatus::Running)) {
+            ExecutionStatus::Running
+        } else if any(|s| matches!(s, ExecutionStatus::Waiting)) {
+            ExecutionStatus::Waiting
+        } else if any(|s| matches!(s, ExecutionStatus::Failed)) {
+            ExecutionStatus::Failed
+        } else if any(|s| matches!(s, ExecutionStatus::Idle)) {
+            ExecutionStatus::Idle
+        } else {
+            ExecutionStatus::Completed
+        };
+        let run_node_id = format!("orca-run:{run_id}");
+        let started = members.iter().filter_map(|d| d.created_s).min();
+        let last = members
+            .iter()
+            .filter_map(|d| d.completed_s.or(d.heartbeat_s).or(d.created_s))
+            .max();
+        let mut run = ExecutionNode::new(run_node_id.clone(), format!("Orca run {}", short_id(&run_id)), "Orca");
+        run.status = run_status;
+        run.relationship = Reliability::Confirmed;
+        run.started_at = started.and_then(rfc3339);
+        run.last_activity_at = last.and_then(rfc3339);
+        run.usage_source = Some(ORCA_SOURCE.into());
+        out.push(run);
+        for (dispatch, status) in members.into_iter().zip(statuses) {
+            let parent = dispatch
+                .parent_dispatch_id
+                .as_deref()
+                .filter(|parent| known.contains(parent) && *parent != dispatch.id)
+                .map_or_else(|| run_node_id.clone(), |parent| format!("orca-dispatch:{parent}"));
+            let mut node = ExecutionNode::new(
+                format!("orca-dispatch:{}", dispatch.id),
+                format!("Worker {}", short_id(&dispatch.task_id)),
+                "Orca",
+            );
+            node.parent_id = Some(parent);
+            node.status = status;
+            node.relationship = Reliability::Confirmed;
+            node.started_at = dispatch.created_s.and_then(rfc3339);
+            node.last_activity_at = dispatch
+                .completed_s
+                .or(dispatch.heartbeat_s)
+                .or(dispatch.created_s)
+                .and_then(rfc3339);
+            node.usage_source = Some(ORCA_SOURCE.into());
+            out.push(node);
+        }
+    }
+    out
 }
 
 fn age_of(modified: SystemTime) -> Option<Duration> {
@@ -354,6 +450,13 @@ impl Collector {
             }
         }
         executions.extend(passive);
+        if let Some(db) = adapters::orca_db_path() {
+            let since = SystemTime::now()
+                .checked_sub(SESSION_WINDOW)
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            executions.extend(orca_nodes(&adapters::orca_dispatches(&db, since)));
+        }
 
         attach_parents(&mut executions, &node_of_session, parent_of);
 
@@ -703,6 +806,84 @@ mod tests {
         assert!(matches!(child.relationship, Reliability::Confirmed));
         let orphan = nodes.iter().find(|n| n.id == "orphan").unwrap();
         assert!(matches!(orphan.relationship, Reliability::Unavailable));
+    }
+
+    fn dispatch(id: &str, run: &str, parent: Option<&str>, status: &str) -> OrcaDispatch {
+        OrcaDispatch {
+            id: id.into(),
+            run_id: run.into(),
+            task_id: format!("task_{id}"),
+            parent_dispatch_id: parent.map(str::to_owned),
+            status: status.into(),
+            depth: 1,
+            created_s: Some(1_700_000_000),
+            completed_s: None,
+            heartbeat_s: None,
+        }
+    }
+
+    #[test]
+    fn orca_workers_nest_under_their_creator_or_their_run() {
+        let nodes = orca_nodes(&[
+            dispatch("a", "run1", None, "dispatched"),
+            dispatch("b", "run1", Some("a"), "completed"),
+            dispatch("c", "run1", Some("gone"), "failed"),
+            dispatch("d", "run2", None, "pending"),
+        ]);
+        let parent = |id: &str| nodes.iter().find(|n| n.id == id).and_then(|n| n.parent_id.clone());
+        assert_eq!(parent("orca-dispatch:a").as_deref(), Some("orca-run:run1"));
+        assert_eq!(parent("orca-dispatch:b").as_deref(), Some("orca-dispatch:a"));
+        assert_eq!(
+            parent("orca-dispatch:c").as_deref(),
+            Some("orca-run:run1"),
+            "unknown creator falls back to the run"
+        );
+        assert_eq!(parent("orca-dispatch:d").as_deref(), Some("orca-run:run2"));
+        assert_eq!(parent("orca-run:run1"), None);
+        assert_eq!(nodes.iter().filter(|n| n.id.starts_with("orca-run:")).count(), 2);
+    }
+
+    #[test]
+    fn orca_status_comes_from_recorded_state_and_run_aggregates_it() {
+        let nodes = orca_nodes(&[
+            dispatch("a", "r", None, "dispatched"),
+            dispatch("b", "r", None, "failed"),
+            dispatch("c", "q", None, "completed"),
+            dispatch("d", "p", None, "pending"),
+        ]);
+        let status = |id: &str| {
+            nodes
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| format!("{:?}", n.status))
+                .unwrap()
+        };
+        assert_eq!(status("orca-dispatch:a"), "Running");
+        assert_eq!(status("orca-dispatch:b"), "Failed");
+        assert_eq!(status("orca-dispatch:d"), "Waiting");
+        assert_eq!(status("orca-run:r"), "Running");
+        assert_eq!(status("orca-run:q"), "Completed");
+        assert_eq!(status("orca-run:p"), "Waiting");
+    }
+
+    #[test]
+    fn orca_nodes_report_no_model_or_usage_and_name_their_source() {
+        let nodes = orca_nodes(&[dispatch("a", "r", None, "completed")]);
+        for node in &nodes {
+            assert!(node.model.is_none() && node.tokens.is_none());
+            assert!(matches!(node.usage_reliability, Reliability::Unavailable));
+            assert_eq!(node.usage_source.as_deref(), Some(ORCA_SOURCE));
+            assert!(node.project_path.is_none());
+        }
+    }
+
+    #[test]
+    fn a_stale_heartbeat_makes_a_dispatched_worker_idle() {
+        let mut d = dispatch("a", "r", None, "dispatched");
+        d.heartbeat_s = Some(1_700_000_000);
+        assert!(matches!(orca_dispatch_status(&d), ExecutionStatus::Idle));
+        d.heartbeat_s = None;
+        assert!(matches!(orca_dispatch_status(&d), ExecutionStatus::Running));
     }
 
     /// Manual smoke test against this machine: `cargo test live_snapshot -- --ignored --nocapture`.

@@ -472,6 +472,70 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
 }
 
+/// Orca keeps its orchestration state (runs, tasks, worker dispatches) in a SQLite database of its own.
+pub fn orca_db_path() -> Option<PathBuf> {
+    let path = dirs::data_dir()?.join("orca").join("orchestration.db");
+    path.is_file().then_some(path)
+}
+
+/// One worker run recorded by Orca. Only identifiers, state and timestamps: the task spec, objective, result and
+/// message bodies hold prompt content and are never selected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrcaDispatch {
+    pub id: String,
+    pub run_id: String,
+    pub task_id: String,
+    /// Dispatch whose worker created this one, set only for real delegation (see `orca_dispatches`).
+    pub parent_dispatch_id: Option<String>,
+    /// `pending`, `dispatched`, `completed`, `failed` or `circuit_broken`, as Orca records it.
+    pub status: String,
+    pub depth: u64,
+    pub created_s: Option<i64>,
+    pub completed_s: Option<i64>,
+    pub heartbeat_s: Option<i64>,
+}
+
+/// Read-only: opened with `SQLITE_OPEN_READ_ONLY`. A dispatch counts as delegated by another worker only when its
+/// `creator_dispatch_id` is set and the creator is not its own assignee (Orca documents that case as bookkeeping).
+/// Active dispatches are always returned; finished ones only when created since `created_since_s`.
+pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+    else {
+        return Vec::new();
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, run_id, task_id, creator_dispatch_id, creator_handle, assignee_handle, status, depth,
+                CAST(strftime('%s', created_at) AS INTEGER),
+                CAST(strftime('%s', completed_at) AS INTEGER),
+                CAST(strftime('%s', last_heartbeat_at) AS INTEGER)
+         FROM dispatch_contexts
+         WHERE status IN ('pending', 'dispatched') OR CAST(strftime('%s', created_at) AS INTEGER) >= ?1
+         ORDER BY created_at",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([created_since_s], |row| {
+        let creator_dispatch: Option<String> = row.get(3)?;
+        let creator: Option<String> = row.get(4)?;
+        let assignee: Option<String> = row.get(5)?;
+        let delegated = creator_dispatch.filter(|_| creator.is_some() && creator != assignee);
+        Ok(OrcaDispatch {
+            id: row.get(0)?,
+            run_id: row.get(1)?,
+            task_id: row.get(2)?,
+            parent_dispatch_id: delegated,
+            status: row.get(6)?,
+            depth: row.get::<_, i64>(7)?.max(0) as u64,
+            created_s: row.get(8)?,
+            completed_s: row.get(9)?,
+            heartbeat_s: row.get(10)?,
+        })
+    });
+    rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +769,41 @@ mod tests {
         assert_eq!((subs[1].agent_type.as_deref(), subs[1].depth), (None, 1));
         assert!(claude_subagents(&base.join("proj").join("none.jsonl")).is_empty());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn orca_delegation_requires_a_creator_that_is_not_the_assignee() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-orca.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
+                   assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
+                 INSERT INTO dispatch_contexts VALUES ('root', 'r', 't1', NULL, NULL, 'h1', 'dispatched', 1, '2026-10-14 10:00:00', NULL, '2026-10-14 10:05:00');
+                 INSERT INTO dispatch_contexts VALUES ('kid', 'r', 't2', 'root', 'h1', 'h2', 'completed', 2, '2026-10-14 10:01:00', '2026-10-14 10:04:00', NULL);
+                 INSERT INTO dispatch_contexts VALUES ('self', 'r', 't3', 'root', 'h3', 'h3', 'completed', 2, '2026-10-14 10:02:00', NULL, NULL);
+                 INSERT INTO dispatch_contexts VALUES ('old', 'r', 't4', NULL, NULL, 'h4', 'completed', 1, '2020-01-01 00:00:00', NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let got = orca_dispatches(&path, 1_700_000_000);
+        let find = |id: &str| got.iter().find(|d| d.id == id).unwrap();
+        assert_eq!(
+            got.len(),
+            3,
+            "finished dispatches before the cutoff are dropped, active ones kept"
+        );
+        assert_eq!(find("root").parent_dispatch_id, None);
+        assert_eq!(find("kid").parent_dispatch_id.as_deref(), Some("root"));
+        assert_eq!(
+            find("self").parent_dispatch_id,
+            None,
+            "creator == assignee is bookkeeping, not delegation"
+        );
+        assert_eq!(find("kid").depth, 2);
+        assert!(find("root").heartbeat_s.is_some() && find("kid").completed_s.is_some());
+        assert!(orca_dispatches(Path::new("/definitely/missing.db"), 0).is_empty());
+        let _ = fs::remove_file(&path);
     }
 }

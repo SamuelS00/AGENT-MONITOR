@@ -16,6 +16,10 @@ pub enum Reliability {
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionStatus {
     Running,
+    /// Blocked on another agent or on a dispatch that has not started.
+    Waiting,
+    /// Ended with an error as recorded by the tool.
+    Failed,
     /// A live process, or a live host, with no recent activity.
     Idle,
     /// No live process observed and nothing written recently. Says nothing about how the session ended.
