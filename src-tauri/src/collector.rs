@@ -312,13 +312,14 @@ fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
             let parent = by_creator
                 .or_else(by_task)
                 .map_or_else(|| run_node_id.clone(), |parent| format!("orca-dispatch:{parent}"));
+            // The recorded task title is the most useful name; a short id keeps untitled workers apart.
+            let title = dispatch.title.as_deref().and_then(clean_task);
             let mut node = ExecutionNode::new(
                 format!("orca-dispatch:{}", dispatch.id),
-                format!("Worker {}", short_id(&dispatch.task_id)),
+                title.unwrap_or_else(|| format!("Worker {}", short_id(&dispatch.task_id))),
                 "Orca",
             );
             node.parent_id = Some(parent);
-            node.task = dispatch.title.as_deref().and_then(clean_task);
             node.status = status;
             node.relationship = Reliability::Confirmed;
             node.started_at = dispatch.created_s.and_then(rfc3339);
@@ -1249,7 +1250,7 @@ mod tests {
         let nodes = orca_nodes(&[dispatch("a", "r", None, "completed")]);
         for node in &nodes {
             assert!(node.model.is_none() && node.tokens.is_none());
-            assert!(node.task.is_none() || node.task.as_deref() == Some("title a"));
+            assert!(node.task.is_none());
             assert!(matches!(node.usage_reliability, Reliability::Unavailable));
             assert_eq!(node.usage_source.as_deref(), Some(ORCA_SOURCE));
             assert!(node.project_path.is_none());
@@ -1420,8 +1421,12 @@ mod tests {
         assert_eq!(parent("orca-dispatch:aA1").as_deref(), Some("orca-dispatch:oA"));
         assert_eq!(parent("orca-dispatch:aB1").as_deref(), Some("orca-dispatch:oB"));
         assert_eq!(parent("orca-dispatch:sA1x").as_deref(), Some("orca-dispatch:aA1"));
-        assert_eq!(by("orca-dispatch:sA1x").task.as_deref(), Some("Check edge cases"));
-        assert_eq!(by("orca-dispatch:oA").task.as_deref(), Some("Backend workstream"));
+        assert_eq!(
+            by("orca-dispatch:sA1x").label,
+            "Check edge cases",
+            "the task title names the worker"
+        );
+        assert_eq!(by("orca-dispatch:oA").label, "Backend workstream");
         assert_eq!(format!("{:?}", by("orca-dispatch:aB1").status), "Completed");
         assert_eq!(format!("{:?}", by("orca-dispatch:sA1x").status), "Failed");
         assert_eq!(format!("{:?}", by("orca-run:run").status), "Running");
