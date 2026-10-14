@@ -1,9 +1,10 @@
 use crate::adapters::{self, SessionUsage, TranscriptFile};
-use crate::domain::{ExecutionNode, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability, UsageDetail};
+use crate::domain::{
+    ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability, UsageDetail,
+};
 use chrono::{DateTime, Utc};
 use std::{
     collections::HashMap,
-    fs,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, SystemTime},
@@ -21,6 +22,23 @@ const RECOGNIZED_TOOLS: &[(&str, &str)] = &[
 const IDLE_AFTER: Duration = Duration::from_secs(120);
 /// A transcript last written before the process started cannot belong to it.
 const START_SLACK: Duration = Duration::from_secs(5);
+/// Without a live process, a session whose file was written this recently is treated as idle if its host is alive.
+const ACTIVE_WINDOW: Duration = Duration::from_secs(30 * 60);
+/// How far back sessions that no process owns are listed.
+const SESSION_WINDOW: Duration = Duration::from_secs(24 * 3600);
+/// Upper bound per tool so a busy machine cannot flood the list.
+const MAX_PASSIVE_SESSIONS: usize = 30;
+/// Subcommands that are safe to show; every other positional argument may be a prompt and is dropped.
+const SAFE_SUBCOMMANDS: &[&str] = &[
+    "serve",
+    "app-server",
+    "exec-server",
+    "mcp-server",
+    "exec",
+    "resume",
+    "run",
+    "review",
+];
 const LAUNCHERS: &[&str] = &["node", "bun", "deno", "python", "python3", "npx"];
 
 type UsageCache = HashMap<PathBuf, (SystemTime, u64, SessionUsage)>;
@@ -48,16 +66,18 @@ pub fn recognize(executable: &str, cmd: &[String]) -> Option<&'static str> {
     if cmd.iter().any(|part| part.starts_with("--type=")) || executable.to_lowercase().contains("helper") {
         return None;
     }
-    let mut candidates = vec![base_name(executable)];
-    if let Some(first) = cmd.first() {
-        let first_name = base_name(first);
-        if LAUNCHERS.contains(&first_name.as_str()) {
+    let mut candidates = Vec::new();
+    match cmd.first().map(|first| base_name(first)) {
+        Some(first) if LAUNCHERS.contains(&first.as_str()) => {
+            candidates.push(base_name(executable));
             if let Some(script) = cmd.iter().skip(1).find(|part| !part.starts_with('-')) {
                 candidates.push(base_name(script));
             }
-        } else {
-            candidates.push(first_name);
         }
+        // The name the process was started as wins over the binary on disk: Claude Code re-executes its own
+        // binary as `ugrep`, `rg` and similar workers, which are part of one session and not sessions themselves.
+        Some(first) => candidates.push(first),
+        None => candidates.push(base_name(executable)),
     }
     RECOGNIZED_TOOLS
         .iter()
@@ -70,7 +90,77 @@ struct Seen {
     tool: &'static str,
     start: u64,
     cwd: Option<PathBuf>,
-    command: String,
+    /// Full argument vector. Kept in memory only to match sessions; it is never serialized.
+    args: Vec<String>,
+}
+
+/// Background servers that host sessions of many projects. They are not sessions themselves.
+fn is_service(tool: &str, args: &[String]) -> bool {
+    let has = |word: &str| args.iter().skip(1).any(|a| a == word);
+    match tool {
+        "Codex" => has("app-server") || has("exec-server") || has("mcp-server"),
+        "OpenCode" => has("serve"),
+        _ => false,
+    }
+}
+
+/// A working directory that can plausibly be a project. Filesystem roots and application bundles describe where a
+/// helper happens to run, not what the user is working on.
+fn is_project_dir(cwd: &Path) -> bool {
+    cwd.parent().is_some()
+        && !["/Applications", "/System", "/Library", "/usr", "/private"]
+            .iter()
+            .any(|p| cwd.starts_with(p))
+}
+
+/// Executable name, flag names and known subcommands only. Flag values and free-form arguments can hold prompts,
+/// settings or credentials, so they never reach the snapshot or the database.
+pub fn sanitize_command(args: &[String]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        if i == 0 {
+            out.push(base_name(arg));
+        } else if let Some(flag) = arg.strip_prefix("--") {
+            out.push(format!("--{}", flag.split('=').next().unwrap_or_default()));
+        } else if SAFE_SUBCOMMANDS.contains(&arg.as_str()) {
+            out.push(arg.clone());
+        }
+    }
+    out.join(" ")
+}
+
+/// Session id passed as `--resume <id>`, `--resume=<id>` or `--session-id <id>`.
+fn session_id_in(args: &[String]) -> Option<String> {
+    let looks_like_id = |v: &str| v.len() >= 8 && v.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    args.iter().enumerate().find_map(|(i, arg)| {
+        let value = match arg.split_once('=') {
+            Some(("--resume" | "--session-id", v)) => Some(v),
+            None if arg == "--resume" || arg == "--session-id" => args.get(i + 1).map(String::as_str),
+            _ => None,
+        }?;
+        looks_like_id(value).then(|| value.to_owned())
+    })
+}
+
+fn age_of(modified: SystemTime) -> Option<Duration> {
+    SystemTime::now().duration_since(modified).ok()
+}
+
+/// Status for a session that no process owns, from its last write and whether its host is alive.
+/// Never `Completed`: a quiet file does not prove the session ended.
+fn passive_status(modified: SystemTime, host_alive: bool) -> ExecutionStatus {
+    match age_of(modified) {
+        Some(age) if age <= IDLE_AFTER => ExecutionStatus::Running,
+        Some(age) if age <= ACTIVE_WINDOW && host_alive => ExecutionStatus::Idle,
+        _ => ExecutionStatus::Unknown,
+    }
+}
+
+fn dir_label(path: &str, fallback: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 /// Transcript candidates for one tool plus the parser that reads them.
@@ -104,7 +194,7 @@ impl Collector {
                 tool,
                 start: process.start_time(),
                 cwd: process.cwd().map(Path::to_path_buf),
-                command: cmd.join(" "),
+                args: cmd,
             });
         }
         // Newest process first so transcripts are assigned to at most one process each.
@@ -118,94 +208,107 @@ impl Collector {
             let started_at = DateTime::from_timestamp(item.start as i64, 0)
                 .unwrap_or_else(Utc::now)
                 .to_rfc3339();
-            let linked = item
-                .cwd
-                .as_deref()
-                .and_then(|cwd| self.link_usage(item, cwd, &mut claimed));
+            let service = is_service(item.tool, &item.args);
+            let project = item.cwd.as_deref().filter(|cwd| !service && is_project_dir(cwd));
+            let linked = project.and_then(|cwd| self.link_usage(item, cwd, &mut claimed));
             processes.push(ObservedProcess {
                 id: process_id.clone(),
                 pid: item.pid,
                 tool: item.tool.into(),
-                command: item.command.clone(),
+                command: sanitize_command(&item.args),
                 started_at: started_at.clone(),
-                project_path: item.cwd.as_ref().map(|path| path.display().to_string()),
+                project_path: project.map(|path| path.display().to_string()),
                 status: ExecutionStatus::Running,
                 reliability: Reliability::Confirmed,
             });
-            let label = item
-                .cwd
-                .as_deref()
-                .and_then(Path::file_name)
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("{} process", item.tool));
-            let mut node = ExecutionNode {
-                id: format!("execution:{process_id}"),
-                parent_id: None,
-                process_id: Some(process_id),
-                label,
-                tool: item.tool.into(),
-                model: None,
-                status: ExecutionStatus::Running,
-                started_at: Some(started_at),
-                tokens: None,
-                relationship: Reliability::Confirmed,
-                model_reliability: Reliability::Unavailable,
-                tokens_in: None,
-                tokens_out: None,
-                usage_reliability: Reliability::Unavailable,
-                usage_source: None,
-                detail: UsageDetail::default(),
-                last_activity_at: None,
+            let label = if service {
+                format!("{} server", item.tool)
+            } else {
+                project
+                    .and_then(Path::file_name)
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{} process", item.tool))
             };
+            let mut node = ExecutionNode::new(format!("execution:{process_id}"), label, item.tool);
+            node.process_id = Some(process_id);
+            node.role = if service {
+                ExecutionRole::Service
+            } else {
+                ExecutionRole::Session
+            };
+            node.project_path = project.map(|path| path.display().to_string());
+            node.status = ExecutionStatus::Running;
+            node.started_at = Some(started_at);
+            node.relationship = Reliability::Confirmed;
             if let Some((usage, reliability, source, modified)) = linked {
                 apply_usage(&mut node, &usage, reliability, source);
                 node.last_activity_at = Some(DateTime::<Utc>::from(modified).to_rfc3339());
-                if SystemTime::now()
-                    .duration_since(modified)
-                    .is_ok_and(|age| age > IDLE_AFTER)
-                {
+                if age_of(modified).is_some_and(|age| age > IDLE_AFTER) {
                     node.status = ExecutionStatus::Idle;
                 }
             }
             executions.push(node);
         }
 
-        // A local Codex session file is exact evidence for that file, so its counters are confirmed for the artifact.
-        // It does not prove an active process or a parent-child relationship.
-        for path in codex_session_artifacts() {
-            let id = format!("codex-session:{}", path.display());
-            let meta = fs::metadata(&path).ok();
-            let modified = meta.as_ref().and_then(|m| m.modified().ok());
-            let usage = meta
-                .as_ref()
-                .zip(modified)
-                .and_then(|(m, modified)| self.cached(&path, modified, m.len(), adapters::parse_codex));
-            let mut node = ExecutionNode {
-                id,
-                parent_id: None,
-                process_id: None,
-                label: "Codex local session artifact".into(),
-                tool: "Codex".into(),
-                model: None,
-                status: ExecutionStatus::Unknown,
-                started_at: modified.map(DateTime::<Utc>::from).map(|time| time.to_rfc3339()),
-                tokens: None,
-                relationship: Reliability::Unavailable,
-                model_reliability: Reliability::Unavailable,
-                tokens_in: None,
-                tokens_out: None,
-                usage_reliability: Reliability::Unavailable,
-                usage_source: None,
-                detail: UsageDetail::default(),
-                last_activity_at: None,
-            };
-            if let Some(usage) = usage {
+        // Sessions no process claimed: the desktop apps host many sessions behind one server process, so the
+        // tools' own session stores are the only evidence of which projects are being worked on. Counters are
+        // confirmed for the file, but a file does not prove a live process, so status comes from write recency.
+        let host_alive = |tool: &str| seen.iter().any(|item| item.tool == tool);
+        let mut passive = Vec::new();
+        for rollout in adapters::codex_recent_rollouts(SESSION_WINDOW) {
+            if claimed.contains(&rollout.file.path) || passive.len() >= MAX_PASSIVE_SESSIONS {
+                continue;
+            }
+            let path = &rollout.file.path;
+            let mut node = ExecutionNode::new(
+                format!("codex-session:{}", path.display()),
+                rollout
+                    .cwd
+                    .as_deref()
+                    .map_or_else(|| "Codex session".into(), |cwd| dir_label(cwd, "Codex session")),
+                "Codex",
+            );
+            node.project_path = rollout.cwd.filter(|cwd| is_project_dir(Path::new(cwd)));
+            node.status = passive_status(rollout.file.modified, host_alive("Codex"));
+            node.started_at = Some(DateTime::<Utc>::from(rollout.file.modified).to_rfc3339());
+            node.last_activity_at = node.started_at.clone();
+            if let Some(usage) = self.cached(path, rollout.file.modified, rollout.file.len, adapters::parse_codex) {
                 apply_usage(&mut node, &usage, Reliability::Confirmed, "Codex rollout file".into());
                 node.started_at = usage.started_at.clone().or(node.started_at);
-                node.last_activity_at = usage.last_event_at;
+                node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
             }
-            executions.push(node);
+            passive.push(node);
         }
+        if let Some(db) = adapters::opencode_db_path() {
+            let since_ms = SystemTime::now()
+                .checked_sub(SESSION_WINDOW)
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64);
+            for session in adapters::opencode_recent_sessions(&db, since_ms)
+                .into_iter()
+                .filter(|s| !claimed.contains(&PathBuf::from(format!("opencode:{}", s.id))))
+                .take(MAX_PASSIVE_SESSIONS)
+            {
+                let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(session.updated_ms);
+                let mut node = ExecutionNode::new(
+                    format!("opencode-session:{}", session.id),
+                    dir_label(&session.directory, "OpenCode session"),
+                    "OpenCode",
+                );
+                node.project_path = Some(session.directory.clone()).filter(|d| is_project_dir(Path::new(d)));
+                node.status = passive_status(modified, host_alive("OpenCode"));
+                node.started_at = session.usage.started_at.clone();
+                node.last_activity_at = session.usage.last_event_at.clone();
+                apply_usage(
+                    &mut node,
+                    &session.usage,
+                    Reliability::Confirmed,
+                    "OpenCode database".into(),
+                );
+                passive.push(node);
+            }
+        }
+        executions.extend(passive);
 
         MonitorSnapshot {
             observed_at,
@@ -259,13 +362,31 @@ impl Collector {
             ),
             _ => return None,
         };
+        if item.tool == "Claude Code" {
+            let named_file = session_id_in(&item.args)
+                .and_then(|id| adapters::claude_transcript_by_id(&id))
+                .filter(|f| !claimed.contains(&f.path));
+            if let Some(file) = named_file {
+                claimed.push(file.path.clone());
+                let usage = self.cached(&file.path, file.modified, file.len, parse)?;
+                return Some((
+                    usage,
+                    Reliability::Confirmed,
+                    format!("{source} (session id in command)"),
+                    file.modified,
+                ));
+            }
+        }
         let floor = SystemTime::UNIX_EPOCH + Duration::from_secs(item.start.saturating_sub(START_SLACK.as_secs()));
         let file = candidates
             .into_iter()
             .find(|f| f.modified >= floor && !claimed.contains(&f.path))?;
         claimed.push(file.path.clone());
         let usage = self.cached(&file.path, file.modified, file.len, parse)?;
-        let named = usage.session_id.as_deref().is_some_and(|id| item.command.contains(id));
+        let named = usage
+            .session_id
+            .as_deref()
+            .is_some_and(|id| item.args.iter().any(|a| a.contains(id)));
         let (reliability, how) = if named {
             (Reliability::Confirmed, "session id in command")
         } else {
@@ -283,7 +404,7 @@ impl Collector {
             .into_iter()
             .find(|s| !claimed.contains(&PathBuf::from(format!("opencode:{}", s.id))))?;
         claimed.push(PathBuf::from(format!("opencode:{}", session.id)));
-        let named = item.command.contains(&session.id);
+        let named = item.args.iter().any(|a| a.contains(&session.id));
         let (reliability, how) = if named {
             (Reliability::Confirmed, "session id in command")
         } else {
@@ -321,25 +442,9 @@ fn apply_usage(node: &mut ExecutionNode, usage: &SessionUsage, reliability: Reli
     node.usage_source = Some(source);
 }
 
-fn codex_session_artifacts() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let archive = home.join(".codex").join("archived_sessions");
-    let Ok(entries) = fs::read_dir(archive) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
-        .take(20)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::recognize;
+    use super::*;
 
     fn cmd(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| p.to_string()).collect()
@@ -399,15 +504,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn embedded_workers_run_from_a_cli_binary_are_not_sessions() {
+        // Claude Code re-executes its own binary as `ugrep`; the executable name is still `claude`.
+        assert_eq!(recognize("claude", &cmd(&["ugrep", "--ignore-files", "pattern"])), None);
+        assert_eq!(
+            recognize("claude", &cmd(&["claude", "--resume", "x"])),
+            Some("Claude Code")
+        );
+        assert_eq!(recognize("claude", &[]), Some("Claude Code"));
+    }
+
+    #[test]
+    fn app_servers_are_services_but_cli_sessions_are_not() {
+        let args = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert!(is_service("Codex", &args(&["/x/codex", "-c", "a=b", "app-server"])));
+        assert!(is_service("Codex", &args(&["codex", "exec-server", "--remote", "u"])));
+        assert!(is_service("OpenCode", &args(&["opencode.exe", "serve", "--service"])));
+        assert!(!is_service("Codex", &args(&["codex", "resume", "abc"])));
+        assert!(!is_service("Claude Code", &args(&["claude", "serve"])));
+    }
+
+    #[test]
+    fn sanitized_command_drops_flag_values_and_free_text() {
+        let args = [
+            "/usr/bin/claude",
+            "--settings",
+            "{\"token\":\"SECRET\"}",
+            "--model=opus",
+            "fix the bug",
+            "resume",
+        ]
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>();
+        let out = sanitize_command(&args);
+        assert_eq!(out, "claude --settings --model resume");
+        assert!(!out.contains("SECRET") && !out.contains("opus") && !out.contains("bug"));
+    }
+
+    #[test]
+    fn session_id_is_read_only_from_resume_flags() {
+        let args = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let id = "36a77769-8d52-4ea5-8719-33f69cacf8eb";
+        assert_eq!(session_id_in(&args(&["claude", "--resume", id])).as_deref(), Some(id));
+        assert_eq!(
+            session_id_in(&args(&["claude", &format!("--session-id={id}")])).as_deref(),
+            Some(id)
+        );
+        assert_eq!(session_id_in(&args(&["claude", "--resume"])), None);
+        assert_eq!(session_id_in(&args(&["claude", "--resume", "not-an-id!"])), None);
+        assert_eq!(session_id_in(&args(&["claude", id])), None);
+    }
+
+    #[test]
+    fn roots_and_app_bundles_are_not_projects() {
+        assert!(!is_project_dir(Path::new("/")));
+        assert!(!is_project_dir(Path::new(
+            "/Applications/ChatGPT.app/Contents/Resources"
+        )));
+        assert!(is_project_dir(Path::new("/Users/a/work/app")));
+    }
+
+    #[test]
+    fn passive_status_never_claims_completion() {
+        let ago = |secs| SystemTime::now() - Duration::from_secs(secs);
+        assert!(matches!(passive_status(ago(10), false), ExecutionStatus::Running));
+        assert!(matches!(passive_status(ago(600), true), ExecutionStatus::Idle));
+        assert!(matches!(passive_status(ago(600), false), ExecutionStatus::Unknown));
+        assert!(matches!(passive_status(ago(86_400), true), ExecutionStatus::Unknown));
+    }
+
     /// Manual smoke test against this machine: `cargo test live_snapshot -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn live_snapshot() {
         let snapshot = super::Collector::default().collect();
+        for p in &snapshot.processes {
+            println!(
+                "proc pid={} tool={} cwd={:?} status={:?} cmd={}",
+                p.pid, p.tool, p.project_path, p.status, p.command
+            );
+        }
         for e in &snapshot.executions {
             println!(
-                "{:<12} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
+                "{:<12} {:?} proj={:?} {:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
                 e.tool,
+                e.role,
+                e.project_path,
+                e.status,
                 e.label,
                 e.model,
                 e.model_reliability,

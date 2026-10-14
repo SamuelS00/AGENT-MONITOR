@@ -21,6 +21,15 @@ pub enum ExecutionStatus {
     Unknown,
 }
 
+/// `Session` is user-facing agent work. `Service` is infrastructure (an app server or background daemon)
+/// that hosts sessions but is not one itself, so it never owns a project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionRole {
+    Session,
+    Service,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObservedProcess {
@@ -56,6 +65,9 @@ pub struct ExecutionNode {
     pub id: String,
     pub parent_id: Option<String>,
     pub process_id: Option<String>,
+    pub role: ExecutionRole,
+    /// Working directory the tool itself recorded (or the process was started in); `None` when unknown.
+    pub project_path: Option<String>,
     pub label: String,
     pub tool: String,
     pub model: Option<String>,
@@ -75,6 +87,33 @@ pub struct ExecutionNode {
     pub last_activity_at: Option<String>,
 }
 
+impl ExecutionNode {
+    /// A node with every metric unavailable. Adapters fill in only what their source actually reports.
+    pub fn new(id: String, label: String, tool: &str) -> Self {
+        Self {
+            id,
+            parent_id: None,
+            process_id: None,
+            role: ExecutionRole::Session,
+            project_path: None,
+            label,
+            tool: tool.into(),
+            model: None,
+            status: ExecutionStatus::Unknown,
+            started_at: None,
+            tokens: None,
+            relationship: Reliability::Unavailable,
+            model_reliability: Reliability::Unavailable,
+            tokens_in: None,
+            tokens_out: None,
+            usage_reliability: Reliability::Unavailable,
+            usage_source: None,
+            detail: UsageDetail::default(),
+            last_activity_at: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorSnapshot {
@@ -91,28 +130,16 @@ mod tests {
     #[test]
     fn unavailable_metrics_remain_null_in_serialization() {
         let node = ExecutionNode {
-            id: "fixture-child".into(),
             parent_id: Some("fixture-root".into()),
-            process_id: None,
-            label: "Fixture child".into(),
-            tool: "Codex".into(),
-            model: None,
-            status: ExecutionStatus::Unknown,
-            started_at: None,
-            tokens: None,
             relationship: Reliability::Inferred,
-            model_reliability: Reliability::Unavailable,
-            tokens_in: None,
-            tokens_out: None,
-            usage_reliability: Reliability::Unavailable,
-            usage_source: None,
-            detail: UsageDetail::default(),
-            last_activity_at: None,
+            ..ExecutionNode::new("fixture-child".into(), "Fixture child".into(), "Codex")
         };
         let value = serde_json::to_value(node).expect("serialize fixture");
         assert!(value["tokens"].is_null());
         assert!(value["model"].is_null());
         assert!(value["costUsd"].is_null() && value["provider"].is_null() && value["effort"].is_null());
         assert_eq!(value["relationship"], "inferred");
+        assert_eq!(value["role"], "session");
+        assert!(value["projectPath"].is_null());
     }
 }

@@ -80,27 +80,77 @@ pub fn claude_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
         .unwrap_or_default()
 }
 
-/// Codex rollout files whose session_meta cwd equals `cwd`, newest first. Only recent day folders are scanned.
-pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
+/// Rollout files under `~/.codex/sessions/<year>/<month>/<day>` modified since `cutoff`, newest first.
+fn codex_rollout_files(cutoff: SystemTime) -> Vec<TranscriptFile> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
     let root = home.join(".codex").join("sessions");
     let mut out = Vec::new();
-    let cutoff = SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
     for year in read_dirs(&root) {
         for month in read_dirs(&year) {
             for day in read_dirs(&month) {
-                for file in jsonl_files(&day) {
-                    if file.modified >= cutoff && codex_cwd(&file.path).is_some_and(|c| Path::new(&c) == cwd) {
-                        out.push(file);
-                    }
-                }
+                out.extend(jsonl_files(&day).into_iter().filter(|file| file.modified >= cutoff));
             }
         }
     }
     out.sort_by_key(|file| std::cmp::Reverse(file.modified));
     out
+}
+
+/// Codex rollout files whose session_meta cwd equals `cwd`, newest first. Only recent day folders are scanned.
+pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
+    let cutoff = SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
+    codex_rollout_files(cutoff)
+        .into_iter()
+        .filter(|file| codex_cwd(&file.path).is_some_and(|c| Path::new(&c) == cwd))
+        .collect()
+}
+
+/// A recently written Codex rollout and the working directory its own `session_meta` recorded.
+pub struct CodexRollout {
+    pub file: TranscriptFile,
+    pub cwd: Option<String>,
+}
+
+/// Rollouts written within `window`, from the live and the archived folders, newest first. Not tied to any process:
+/// the Codex desktop app hosts many sessions behind one `app-server` process whose own cwd says nothing about them.
+pub fn codex_recent_rollouts(window: std::time::Duration) -> Vec<CodexRollout> {
+    let cutoff = SystemTime::now() - window;
+    let mut files = codex_rollout_files(cutoff);
+    if let Some(home) = dirs::home_dir() {
+        files.extend(
+            jsonl_files(&home.join(".codex").join("archived_sessions"))
+                .into_iter()
+                .filter(|file| file.modified >= cutoff),
+        );
+    }
+    files.sort_by_key(|file| std::cmp::Reverse(file.modified));
+    files
+        .into_iter()
+        .map(|file| CodexRollout {
+            cwd: codex_cwd(&file.path),
+            file,
+        })
+        .collect()
+}
+
+/// A Claude Code transcript by session id, wherever its project folder is. Used when the command line names the
+/// session (`--resume <id>`), which identifies it without relying on the process working directory.
+pub fn claude_transcript_by_id(id: &str) -> Option<TranscriptFile> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let projects = dirs::home_dir()?.join(".claude").join("projects");
+    read_dirs(&projects).into_iter().find_map(|dir| {
+        let path = dir.join(format!("{id}.jsonl"));
+        let meta = fs::metadata(&path).ok()?;
+        Some(TranscriptFile {
+            path,
+            modified: meta.modified().ok()?,
+            len: meta.len(),
+        })
+    })
 }
 
 fn read_dirs(path: &Path) -> Vec<PathBuf> {
@@ -250,6 +300,7 @@ pub fn opencode_db_path() -> Option<PathBuf> {
 /// A root (non-subagent) OpenCode session of `cwd`, newest first, with its last update in epoch milliseconds.
 pub struct OpencodeSession {
     pub id: String,
+    pub directory: String,
     pub updated_ms: u64,
     pub usage: SessionUsage,
 }
@@ -257,6 +308,16 @@ pub struct OpencodeSession {
 /// Read-only: the database is opened with `SQLITE_OPEN_READ_ONLY`; only the model name, token counters and
 /// timestamps are selected, never message or part content.
 pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<OpencodeSession> {
+    opencode_query(db, Some(cwd), updated_since_ms)
+}
+
+/// Root sessions of every directory updated since `updated_since_ms`. An `opencode serve` process hosts sessions
+/// of many projects, so its own working directory cannot be used to find them.
+pub fn opencode_recent_sessions(db: &Path, updated_since_ms: u64) -> Vec<OpencodeSession> {
+    opencode_query(db, None, updated_since_ms)
+}
+
+fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64) -> Vec<OpencodeSession> {
     use rusqlite::{Connection, OpenFlags};
     let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
     else {
@@ -264,26 +325,27 @@ pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<Op
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
     let Ok(mut stmt) = conn.prepare(
-        "SELECT s.id, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
+        "SELECT s.id, s.directory, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
                 s.tokens_cache_read, s.tokens_cache_write, s.cost,
                 (SELECT json_extract(m.data, '$.modelID') || char(31) || coalesce(json_extract(m.data, '$.providerID'), '') FROM message m
                   WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
                   ORDER BY m.time_created DESC LIMIT 1)
          FROM session s
-         WHERE s.directory = ?1 AND s.parent_id IS NULL AND s.time_updated >= ?2
+         WHERE (?1 IS NULL OR s.directory = ?1) AND s.parent_id IS NULL AND s.time_updated >= ?2
          ORDER BY s.time_updated DESC",
     ) else { return Vec::new() };
     let rows = stmt.query_map(
-        rusqlite::params![cwd.to_string_lossy(), updated_since_ms as i64],
+        rusqlite::params![cwd.map(|c| c.to_string_lossy().into_owned()), updated_since_ms as i64],
         |row| {
             let id: String = row.get(0)?;
-            let created: i64 = row.get(1)?;
-            let updated: i64 = row.get(2)?;
-            let model_json: Option<String> = row.get(3)?;
+            let directory: String = row.get(1)?;
+            let created: i64 = row.get(2)?;
+            let updated: i64 = row.get(3)?;
+            let model_json: Option<String> = row.get(4)?;
             let n = |i: usize| row.get::<_, i64>(i).map(|v| v.max(0) as u64);
-            let (input, output, reasoning, cache_read, cache_write) = (n(4)?, n(5)?, n(6)?, n(7)?, n(8)?);
-            let cost: Option<f64> = row.get(9)?;
-            let last: Option<String> = row.get(10)?;
+            let (input, output, reasoning, cache_read, cache_write) = (n(5)?, n(6)?, n(7)?, n(8)?, n(9)?);
+            let cost: Option<f64> = row.get(10)?;
+            let last: Option<String> = row.get(11)?;
             let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
                 Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
                 None => (None, None),
@@ -303,6 +365,7 @@ pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<Op
             let iso = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339());
             Ok(OpencodeSession {
                 id: id.clone(),
+                directory,
                 updated_ms: updated.max(0) as u64,
                 usage: SessionUsage {
                     model,
@@ -377,6 +440,11 @@ mod tests {
             (Some("fallback"), None, None)
         );
         assert!(opencode_sessions(&path, Path::new("/x"), 1800).len() == 1);
+        // Without a directory every project's root sessions are listed, each with its own directory.
+        let all = opencode_recent_sessions(&path, 0);
+        let mut dirs: Vec<_> = all.iter().map(|s| (s.id.as_str(), s.directory.as_str())).collect();
+        dirs.sort();
+        assert_eq!(dirs, [("a", "/x"), ("empty", "/x"), ("other", "/y")]);
         let _ = fs::remove_file(&path);
     }
 
