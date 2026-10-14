@@ -40,6 +40,7 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
       parentId: e.parentId,
       sessionId: rootOf(e),
       label: e.label,
+      activity: e.task,
       role: e.parentId ? "agent" : "orchestrator",
       tool: e.tool,
       model: metric(e.model, e.modelReliability ?? (e.model ? "confirmed" : "unavailable"), usageSource),

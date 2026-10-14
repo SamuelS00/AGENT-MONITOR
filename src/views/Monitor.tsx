@@ -178,7 +178,7 @@ export function Monitor() {
                       </span>
                       <span role="cell" className="c-main">
                         <span className="title trunc">{s.title}</span>
-                        {isActive(status) && (running > 0 || waiting > 0 || root.activity) && (
+                        {(isActive(status) ? running > 0 || waiting > 0 || root.activity : root.activity) && (
                           <span className="sub trunc">
                             {[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`].filter(Boolean).join(", ")}
                             {(running > 0 || waiting > 0) && root.activity ? " · " : ""}

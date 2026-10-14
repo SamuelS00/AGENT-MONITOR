@@ -52,6 +52,21 @@ pub struct ObservedProcess {
     pub reliability: Reliability,
 }
 
+/// A tool-recorded title shown as "what this agent is working on": whitespace collapsed, capped at 140 characters.
+/// Empty titles and tool placeholders (OpenCode's "New session - ...") are not titles.
+pub fn clean_task(raw: &str) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let placeholder = collapsed.starts_with("New session -") || collapsed.starts_with("Child session -");
+    if collapsed.is_empty() || placeholder {
+        return None;
+    }
+    let mut out: String = collapsed.chars().take(140).collect();
+    if collapsed.chars().count() > 140 {
+        out.push('…');
+    }
+    Some(out)
+}
+
 /// Optional usage breakdown. Every field is `None` when the source does not report it, never zero.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +93,9 @@ pub struct ExecutionNode {
     /// Working directory the tool itself recorded (or the process was started in); `None` when unknown.
     pub project_path: Option<String>,
     pub label: String,
+    /// Short title the tool gave this unit of work (Orca task title, Claude subagent description, OpenCode session
+    /// title). Capped and whitespace-collapsed; `None` when the tool records none.
+    pub task: Option<String>,
     pub tool: String,
     pub model: Option<String>,
     pub status: ExecutionStatus,
@@ -106,6 +124,7 @@ impl ExecutionNode {
             role: ExecutionRole::Session,
             project_path: None,
             label,
+            task: None,
             tool: tool.into(),
             model: None,
             status: ExecutionStatus::Unknown,
@@ -149,6 +168,18 @@ mod tests {
         assert!(value["costUsd"].is_null() && value["provider"].is_null() && value["effort"].is_null());
         assert_eq!(value["relationship"], "inferred");
         assert_eq!(value["role"], "session");
+        assert!(value["task"].is_null());
         assert!(value["projectPath"].is_null());
+    }
+
+    #[test]
+    fn task_titles_are_collapsed_capped_and_never_placeholders() {
+        assert_eq!(clean_task("  fix \n the   bug ").as_deref(), Some("fix the bug"));
+        assert_eq!(clean_task("   "), None);
+        assert_eq!(clean_task("New session - 2026-10-14T10:00:00Z"), None);
+        let long = "é".repeat(200);
+        let cut = clean_task(&long).unwrap();
+        assert_eq!(cut.chars().count(), 141);
+        assert!(cut.ends_with('…'));
     }
 }

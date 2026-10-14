@@ -209,4 +209,22 @@ describe("datasetFromSnapshot", () => {
     expect(dataset.nodes.find((n) => n.id === "fixture-orca-dispatch:b")?.sessionId).toBe("fixture-orca-run:r");
     expect(dataset.tools[0].capabilities).toMatchObject({ hierarchy: "confirmed", usage: "unavailable", process: "unavailable" });
   });
+
+  it("shows the title the tool recorded as what the agent is working on", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot([
+        {
+          id: "fixture-execution:t",
+          label: "Worker",
+          task: "Map the repository",
+          tool: "Orca",
+          status: "running",
+          relationship: "confirmed",
+        },
+        { id: "fixture-execution:n", label: "Worker 2", tool: "Orca", status: "running", relationship: "confirmed" },
+      ]),
+    );
+    expect(dataset.nodes[0].activity).toBe("Map the repository");
+    expect(dataset.nodes[1].activity).toBeUndefined();
+  });
 });

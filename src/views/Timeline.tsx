@@ -162,7 +162,9 @@ export function Timeline() {
                     {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
                   <StatusGlyph status={n.status} />
-                  <span className="trunc">{n.label}</span>
+                  <span className="trunc" title={n.activity ? `${n.label} · ${n.activity}` : n.label}>
+                    {n.label}
+                  </span>
                 </div>
                 <div className="tl-canvas">
                   {ticks.map((t) => (

@@ -1,6 +1,7 @@
 use crate::adapters::{self, OrcaDispatch, SessionUsage, TranscriptFile};
 use crate::domain::{
-    ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability, UsageDetail,
+    clean_task, ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability,
+    UsageDetail,
 };
 use chrono::{DateTime, Utc};
 use std::{
@@ -242,6 +243,7 @@ fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
                 "Orca",
             );
             node.parent_id = Some(parent);
+            node.task = dispatch.title.as_deref().and_then(clean_task);
             node.status = status;
             node.relationship = Reliability::Confirmed;
             node.started_at = dispatch.created_s.and_then(rfc3339);
@@ -436,6 +438,7 @@ impl Collector {
                     },
                     "OpenCode",
                 );
+                node.task = session.title.as_deref().and_then(clean_task);
                 node_of_session.insert(session.id.clone(), node.id.clone());
                 if let Some(parent) = &session.parent_id {
                     parent_of.push((node.id.clone(), parent.clone()));
@@ -489,6 +492,7 @@ impl Collector {
                 let mut node =
                     ExecutionNode::new(format!("{}:subagent:{}", parent.id, sub.agent_id), label, "Claude Code");
                 node.parent_id = Some(parent.id.clone());
+                node.task = sub.description.as_deref().and_then(clean_task);
                 node.process_id = None;
                 node.project_path = parent.project_path.clone();
                 node.relationship = if sub.depth <= 1 {
@@ -824,6 +828,7 @@ mod tests {
             parent_dispatch_id: parent.map(str::to_owned),
             status: status.into(),
             depth: 1,
+            title: Some(format!("title {id}")),
             created_s: Some(1_700_000_000),
             completed_s: None,
             heartbeat_s: None,
@@ -879,6 +884,7 @@ mod tests {
         let nodes = orca_nodes(&[dispatch("a", "r", None, "completed")]);
         for node in &nodes {
             assert!(node.model.is_none() && node.tokens.is_none());
+            assert!(node.task.is_none() || node.task.as_deref() == Some("title a"));
             assert!(matches!(node.usage_reliability, Reliability::Unavailable));
             assert_eq!(node.usage_source.as_deref(), Some(ORCA_SOURCE));
             assert!(node.project_path.is_none());

@@ -21,6 +21,8 @@ export interface ExecutionNode {
   /** Working directory the tool recorded for this session, when known. */
   projectPath?: string;
   label: string;
+  /** Short title the tool recorded for this work (what the agent is working on). */
+  task?: string;
   tool: string;
   model?: string;
   status: ExecutionStatus;

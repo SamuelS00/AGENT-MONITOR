@@ -303,7 +303,7 @@ function Tree({ rootId }: { rootId: string }) {
                 </span>
               )}
               {!r.open && r.hasChildren && <span className="muted collapsed-n">{kids.length}</span>}
-              {n.status === "waiting" && n.activity && <span className="sub trunc">{n.activity}</span>}
+              {n.activity && <span className="sub trunc">{n.activity}</span>}
             </span>
             <span className="trunc">
               <ModelBadge node={n} compact />

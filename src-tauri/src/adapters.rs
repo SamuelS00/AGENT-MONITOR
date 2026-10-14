@@ -147,9 +147,10 @@ pub fn codex_recent_rollouts(window: std::time::Duration) -> Vec<CodexRollout> {
 pub struct ClaudeSubagent {
     pub file: TranscriptFile,
     pub agent_id: String,
-    /// Subagent type (`general-purpose`, `Explore`, ...). The task description is deliberately not read: it is
-    /// derived from the prompt.
+    /// Subagent type (`general-purpose`, `Explore`, ...).
     pub agent_type: Option<String>,
+    /// The short task description Claude Code recorded for the subagent, shown as what it works on.
+    pub description: Option<String>,
     /// 1 when the main session spawned it; deeper when another subagent did.
     pub depth: u64,
 }
@@ -173,6 +174,7 @@ pub fn claude_subagents(session: &Path) -> Vec<ClaudeSubagent> {
             let field = |key: &str| meta.as_ref().and_then(|m| m.get(key));
             Some(ClaudeSubagent {
                 agent_type: field("agentType").and_then(Value::as_str).map(str::to_owned),
+                description: field("description").and_then(Value::as_str).map(str::to_owned),
                 depth: field("spawnDepth").and_then(Value::as_u64).unwrap_or(1),
                 agent_id,
                 file,
@@ -371,6 +373,8 @@ pub struct OpencodeSession {
     pub parent_id: Option<String>,
     /// OpenCode archived the session (`time_archived` is set).
     pub archived: bool,
+    /// Session title as OpenCode stores it (it summarizes the first prompt).
+    pub title: Option<String>,
     pub updated_ms: u64,
     pub usage: SessionUsage,
 }
@@ -394,21 +398,17 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
         return Vec::new();
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
-    // Older databases have no `agent` column; the agent name is optional.
-    let has_agent = conn
-        .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'agent'")
-        .and_then(|mut q| q.exists([]))
-        .unwrap_or(false);
-    let agent_column = if has_agent { "s.agent" } else { "NULL" };
-    let has_archived = conn
-        .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'time_archived'")
-        .and_then(|mut q| q.exists([]))
-        .unwrap_or(false);
-    let archived_column = if has_archived {
-        "s.time_archived IS NOT NULL"
-    } else {
-        "0"
+    // Older databases may lack the optional columns; each falls back to a constant instead of failing the query.
+    let has_column = |name: &str| {
+        conn.prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = ?1")
+            .and_then(|mut q| q.exists([name]))
+            .unwrap_or(false)
     };
+    let optional =
+        |name: &str, expr: &'static str, fallback: &'static str| if has_column(name) { expr } else { fallback };
+    let agent_column = optional("agent", "s.agent", "NULL");
+    let archived_column = optional("time_archived", "s.time_archived IS NOT NULL", "0");
+    let title_column = optional("title", "s.title", "NULL");
     let sql = format!(
         "SELECT s.id, s.directory, s.parent_id, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
                 s.tokens_cache_read, s.tokens_cache_write, s.cost,
@@ -416,7 +416,8 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
                   WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
                   ORDER BY m.time_created DESC LIMIT 1),
                 {agent_column},
-                {archived_column}
+                {archived_column},
+                {title_column}
          FROM session s
          WHERE (?1 IS NULL OR s.directory = ?1) AND (?3 OR s.parent_id IS NULL) AND s.time_updated >= ?2
          ORDER BY s.time_updated DESC"
@@ -443,6 +444,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
             let last: Option<String> = row.get(12)?;
             let agent: Option<String> = row.get(13)?;
             let archived: bool = row.get(14)?;
+            let title: Option<String> = row.get(15)?;
             let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
                 Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
                 None => (None, None),
@@ -465,6 +467,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
                 directory,
                 parent_id: parent_id.clone(),
                 archived,
+                title,
                 updated_ms: updated.max(0) as u64,
                 usage: SessionUsage {
                     model,
@@ -508,6 +511,8 @@ pub struct OrcaDispatch {
     /// `pending`, `dispatched`, `completed`, `failed` or `circuit_broken`, as Orca records it.
     pub status: String,
     pub depth: u64,
+    /// Orca's own task title (`display_name`, else `task_title`). The task spec is never read.
+    pub title: Option<String>,
     pub created_s: Option<i64>,
     pub completed_s: Option<i64>,
     pub heartbeat_s: Option<i64>,
@@ -524,13 +529,14 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, run_id, task_id, creator_dispatch_id, creator_handle, assignee_handle, status, depth,
-                CAST(strftime('%s', created_at) AS INTEGER),
-                CAST(strftime('%s', completed_at) AS INTEGER),
-                CAST(strftime('%s', last_heartbeat_at) AS INTEGER)
-         FROM dispatch_contexts
-         WHERE status IN ('pending', 'dispatched') OR CAST(strftime('%s', created_at) AS INTEGER) >= ?1
-         ORDER BY created_at",
+        "SELECT d.id, d.run_id, d.task_id, d.creator_dispatch_id, d.creator_handle, d.assignee_handle, d.status, d.depth,
+                CAST(strftime('%s', d.created_at) AS INTEGER),
+                CAST(strftime('%s', d.completed_at) AS INTEGER),
+                CAST(strftime('%s', d.last_heartbeat_at) AS INTEGER),
+                coalesce(nullif(t.display_name, ''), nullif(t.task_title, ''))
+         FROM dispatch_contexts d LEFT JOIN tasks t ON t.id = d.task_id
+         WHERE d.status IN ('pending', 'dispatched') OR CAST(strftime('%s', d.created_at) AS INTEGER) >= ?1
+         ORDER BY d.created_at",
     ) else {
         return Vec::new();
     };
@@ -549,6 +555,7 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
             created_s: row.get(8)?,
             completed_s: row.get(9)?,
             heartbeat_s: row.get(10)?,
+            title: row.get(11)?,
         })
     });
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
@@ -798,6 +805,8 @@ mod tests {
             c.execute_batch(
                 "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
                    assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
+                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT);
+                 INSERT INTO tasks VALUES ('t1', '', 'Map the repo'), ('t2', 'Count tests', 'ignored when a display name exists');
                  INSERT INTO dispatch_contexts VALUES ('root', 'r', 't1', NULL, NULL, 'h1', 'dispatched', 1, '2026-10-14 10:00:00', NULL, '2026-10-14 10:05:00');
                  INSERT INTO dispatch_contexts VALUES ('kid', 'r', 't2', 'root', 'h1', 'h2', 'completed', 2, '2026-10-14 10:01:00', '2026-10-14 10:04:00', NULL);
                  INSERT INTO dispatch_contexts VALUES ('self', 'r', 't3', 'root', 'h3', 'h3', 'completed', 2, '2026-10-14 10:02:00', NULL, NULL);
@@ -820,6 +829,13 @@ mod tests {
             "creator == assignee is bookkeeping, not delegation"
         );
         assert_eq!(find("kid").depth, 2);
+        assert_eq!(find("root").title.as_deref(), Some("Map the repo"));
+        assert_eq!(find("kid").title.as_deref(), Some("Count tests"));
+        assert_eq!(
+            find("self").title,
+            None,
+            "a dispatch whose task row is missing has no title"
+        );
         assert!(find("root").heartbeat_s.is_some() && find("kid").completed_s.is_some());
         assert!(orca_dispatches(Path::new("/definitely/missing.db"), 0).is_empty());
         let _ = fs::remove_file(&path);
@@ -834,16 +850,23 @@ mod tests {
             c.execute_batch(
                 "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT, model TEXT, time_created INTEGER, time_updated INTEGER,
                    tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER,
-                   cost REAL, time_archived INTEGER);
+                   cost REAL, time_archived INTEGER, title TEXT);
                  CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
-                 INSERT INTO session VALUES ('live', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, NULL);
-                 INSERT INTO session VALUES ('shelved', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, 99);",
+                 INSERT INTO session VALUES ('live', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, NULL, 'Refactor the parser');
+                 INSERT INTO session VALUES ('shelved', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, 99, 'New session - 2026-10-14');",
             )
             .unwrap();
         }
         let found = opencode_recent_sessions(&path, 0);
         let archived = |id: &str| found.iter().find(|s| s.id == id).unwrap().archived;
         assert!(!archived("live") && archived("shelved"));
+        let title = |id: &str| found.iter().find(|s| s.id == id).unwrap().title.clone();
+        assert_eq!(title("live").as_deref(), Some("Refactor the parser"));
+        assert_eq!(
+            title("shelved").as_deref(),
+            Some("New session - 2026-10-14"),
+            "raw here; the collector filters placeholders"
+        );
         let _ = fs::remove_file(&path);
     }
 }
