@@ -103,6 +103,9 @@ pub struct ExecutionNode {
     pub process_id: Option<String>,
     pub role: ExecutionRole,
     pub level: Option<ExecutionLevel>,
+    /// The tool's own id for this session. It survives a session moving from a live process to files alone, which a
+    /// node id does not, so stored history can tell it is the same session.
+    pub session_ref: Option<String>,
     /// Working directory the tool itself recorded (or the process was started in); `None` when unknown.
     pub project_path: Option<String>,
     pub label: String,
@@ -136,6 +139,7 @@ impl ExecutionNode {
             process_id: None,
             role: ExecutionRole::Session,
             level: None,
+            session_ref: None,
             project_path: None,
             label,
             task: None,

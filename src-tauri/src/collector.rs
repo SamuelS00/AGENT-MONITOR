@@ -1,4 +1,4 @@
-use crate::adapters::{self, ClaudeSession, CodexRollout, OrcaDispatch, SessionUsage, TranscriptFile};
+use crate::adapters::{self, ClaudeSession, CodexRollout, CodexThread, OrcaDispatch, SessionUsage, TranscriptFile};
 use crate::domain::{
     clean_task, ExecutionLevel, ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess,
     Reliability, UsageDetail,
@@ -265,6 +265,78 @@ fn coordinator_candidates(
     }
     candidates.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
     candidates
+}
+
+/// A Codex thread the index lists but whose rollout file is gone or was never written: the index is then the only
+/// evidence. It carries a single cumulative token count with no input/output split, which is all it records.
+fn codex_thread_node(thread: &CodexThread, host_alive: bool) -> ExecutionNode {
+    let mut node = ExecutionNode::new(
+        format!("codex-thread:{}", thread.id),
+        dir_label(&thread.cwd, "Codex session"),
+        "Codex",
+    );
+    node.project_path = Some(thread.cwd.clone()).filter(|cwd| is_project_dir(Path::new(cwd)));
+    node.session_ref = Some(thread.id.clone());
+    node.model = thread.model.clone();
+    if node.model.is_some() {
+        node.model_reliability = Reliability::Confirmed;
+    }
+    node.status = if thread.archived {
+        ExecutionStatus::Archived
+    } else {
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(thread.updated_s).unwrap_or(0));
+        passive_status(modified, host_alive)
+    };
+    node.started_at = rfc3339(thread.created_s);
+    node.last_activity_at = rfc3339(thread.updated_s);
+    node.task = thread.title.as_deref().and_then(clean_task);
+    if thread.tokens_used > 0 {
+        node.tokens = Some(thread.tokens_used);
+        node.usage_reliability = Reliability::Confirmed;
+    }
+    node.detail.effort = thread.effort.clone();
+    node.usage_source = Some("Codex thread index".into());
+    node
+}
+
+/// Enrich Codex sessions with what Codex's own index records: the thread title as what it works on, the archive
+/// state, and the delegations in `thread_spawn_edges` (confirmed by the tool). Index-only threads are added.
+fn apply_codex_index(
+    executions: &mut Vec<ExecutionNode>,
+    node_of_session: &mut HashMap<String, String>,
+    parent_of: &mut Vec<(String, String)>,
+    threads: &[CodexThread],
+    edges: &[(String, String)],
+    host_alive: bool,
+) {
+    for thread in threads {
+        match node_of_session.get(&thread.id).cloned() {
+            Some(node_id) => {
+                if let Some(node) = executions.iter_mut().find(|n| n.id == node_id) {
+                    if node.task.is_none() {
+                        node.task = thread.title.as_deref().and_then(clean_task);
+                    }
+                    if thread.archived {
+                        node.status = ExecutionStatus::Archived;
+                    }
+                }
+            }
+            None if !thread.rollout_path.exists() => {
+                let node = codex_thread_node(thread, host_alive);
+                node_of_session.insert(thread.id.clone(), node.id.clone());
+                executions.push(node);
+            }
+            None => {}
+        }
+    }
+    for (parent, child) in edges {
+        let (Some(child_node), true) = (node_of_session.get(child), node_of_session.contains_key(parent)) else {
+            continue;
+        };
+        if !parent_of.iter().any(|(node, _)| node == child_node) {
+            parent_of.push((child_node.clone(), parent.clone()));
+        }
+    }
 }
 
 fn rfc3339(seconds: i64) -> Option<String> {
@@ -636,6 +708,20 @@ impl Collector {
         }
         executions.extend(passive);
 
+        if let Some(index) = adapters::codex_index_path() {
+            let since = SystemTime::now()
+                .checked_sub(SESSION_WINDOW)
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            apply_codex_index(
+                &mut executions,
+                &mut node_of_session,
+                &mut parent_of,
+                &adapters::codex_threads(&index, since),
+                &adapters::codex_spawn_edges(&index),
+                host_alive("Codex"),
+            );
+        }
         attach_parents(&mut executions, &node_of_session, parent_of);
         assign_levels(&mut executions);
 
@@ -1015,6 +1101,9 @@ impl Collector {
 }
 
 fn apply_usage(node: &mut ExecutionNode, usage: &SessionUsage, reliability: Reliability, source: String) {
+    if node.session_ref.is_none() {
+        node.session_ref = usage.session_id.clone();
+    }
     if let Some(model) = &usage.model {
         node.model = Some(model.clone());
         node.model_reliability = reliability.clone();
@@ -1499,6 +1588,61 @@ mod tests {
             "Archived"
         );
         let _ = std::fs::remove_file(&file.path);
+    }
+
+    #[test]
+    fn the_codex_index_adds_titles_archive_state_edges_and_index_only_threads() {
+        let thread = |id: &str, title: &str, archived: bool, rollout: &str| CodexThread {
+            id: id.into(),
+            rollout_path: PathBuf::from(rollout),
+            created_s: 1_700_000_000,
+            updated_s: 1_700_000_100,
+            cwd: "/Users/a/work/app".into(),
+            title: Some(title.into()),
+            tokens_used: 4200,
+            archived,
+            model: Some("gpt-x".into()),
+            effort: Some("high".into()),
+            agent_role: None,
+        };
+        let mut executions = vec![node("codex-session:parent"), node("codex-session:child")];
+        let mut node_of_session: HashMap<String, String> =
+            [("p", "codex-session:parent"), ("c", "codex-session:child")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        let mut parent_of = Vec::new();
+        let threads = [
+            thread("p", "Plan the work", false, "/definitely/exists-not.jsonl"),
+            thread("c", "Child task", true, "/definitely/exists-not.jsonl"),
+            thread("lost", "Only in the index", false, "/definitely/missing.jsonl"),
+        ];
+        // `p` and `c` are already observed through their rollouts, so only `lost` has no file evidence to add.
+        apply_codex_index(
+            &mut executions,
+            &mut node_of_session,
+            &mut parent_of,
+            &threads,
+            &[("p".into(), "c".into()), ("ghost".into(), "lost".into())],
+            true,
+        );
+        let find = |id: &str| executions.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(find("codex-session:parent").task.as_deref(), Some("Plan the work"));
+        assert_eq!(format!("{:?}", find("codex-session:child").status), "Archived");
+        assert_eq!(
+            parent_of,
+            [("codex-session:child".to_string(), "p".to_string())],
+            "only edges between observed threads"
+        );
+        let lost = find("codex-thread:lost");
+        assert_eq!((lost.tokens, lost.model.as_deref()), (Some(4200), Some("gpt-x")));
+        assert!(
+            lost.tokens_in.is_none() && lost.tokens_out.is_none(),
+            "the index has no input/output split"
+        );
+        assert_eq!(lost.session_ref.as_deref(), Some("lost"));
+        assert_eq!(lost.usage_source.as_deref(), Some("Codex thread index"));
+        assert_eq!(executions.len(), 3);
     }
 
     /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator

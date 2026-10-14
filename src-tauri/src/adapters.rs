@@ -111,6 +111,109 @@ pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
         .collect()
 }
 
+/// Codex keeps an index of its threads in `~/.codex/state_<n>.sqlite` next to the rollout files. The highest `<n>` is the
+/// current schema generation.
+pub fn codex_index_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?.join(".codex");
+    fs::read_dir(home)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let generation = name
+                .strip_prefix("state_")?
+                .strip_suffix(".sqlite")?
+                .parse::<u32>()
+                .ok()?;
+            Some((generation, entry.path()))
+        })
+        .max_by_key(|(generation, _)| *generation)
+        .map(|(_, path)| path)
+}
+
+/// One row of the Codex thread index. The first user message and preview columns hold prompt text and are never selected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexThread {
+    pub id: String,
+    pub rollout_path: PathBuf,
+    pub created_s: i64,
+    pub updated_s: i64,
+    pub cwd: String,
+    /// Title Codex gave the thread (user-set `name` wins over the generated `title`).
+    pub title: Option<String>,
+    /// Cumulative tokens as the index records them, with no input/output split.
+    pub tokens_used: u64,
+    pub archived: bool,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+/// Threads updated since `updated_since_s`, newest first. Read-only; optional columns are used only when present.
+pub fn codex_threads(db: &Path, updated_since_s: i64) -> Vec<CodexThread> {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+    else {
+        return Vec::new();
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
+    let col = |name: &str, fallback: &'static str| -> String {
+        if table_has_column(&conn, "threads", name) {
+            format!("t.{name}")
+        } else {
+            fallback.to_owned()
+        }
+    };
+    let sql = format!(
+        "SELECT t.id, t.rollout_path, t.created_at, t.updated_at, t.cwd, {title}, {tokens}, {archived}, {model}, {effort}, {role}
+         FROM threads t WHERE t.updated_at >= ?1 ORDER BY t.updated_at DESC",
+        title = if table_has_column(&conn, "threads", "name") {
+            "coalesce(nullif(t.name, ''), nullif(t.title, ''))".to_owned()
+        } else {
+            col("title", "NULL")
+        },
+        tokens = col("tokens_used", "0"),
+        archived = col("archived", "0"),
+        model = col("model", "NULL"),
+        effort = col("reasoning_effort", "NULL"),
+        role = col("agent_role", "NULL"),
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([updated_since_s], |row| {
+        Ok(CodexThread {
+            id: row.get(0)?,
+            rollout_path: PathBuf::from(row.get::<_, String>(1)?),
+            created_s: row.get(2)?,
+            updated_s: row.get(3)?,
+            cwd: row.get(4)?,
+            title: row.get(5)?,
+            tokens_used: row.get::<_, i64>(6)?.max(0) as u64,
+            archived: row.get::<_, i64>(7)? != 0,
+            model: row.get(8)?,
+            effort: row.get(9)?,
+            agent_role: row.get(10)?,
+        })
+    });
+    rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
+}
+
+/// Delegations Codex recorded: `(parent thread id, child thread id)`. Confirmed by the tool itself.
+pub fn codex_spawn_edges(db: &Path) -> Vec<(String, String)> {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+    else {
+        return Vec::new();
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
+    let Ok(mut stmt) = conn.prepare("SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges") else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)));
+    rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
+}
+
 /// A recently written Codex rollout and the working directory its own `session_meta` recorded.
 #[derive(Clone)]
 pub struct CodexRollout {
@@ -443,11 +546,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
     // Older databases may lack the optional columns; each falls back to a constant instead of failing the query.
-    let has_column = |name: &str| {
-        conn.prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = ?1")
-            .and_then(|mut q| q.exists([name]))
-            .unwrap_or(false)
-    };
+    let has_column = |name: &str| table_has_column(&conn, "session", name);
     let optional =
         |name: &str, expr: &'static str, fallback: &'static str| if has_column(name) { expr } else { fallback };
     let agent_column = optional("agent", "s.agent", "NULL");
@@ -535,6 +634,14 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
         },
     );
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
+}
+
+/// Whether `table` has `column`. Optional columns differ between tool versions, so queries select them only when
+/// present instead of failing and returning nothing.
+fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")
+        .and_then(|mut q| q.exists([table, column]))
+        .unwrap_or(false)
 }
 
 /// True when `needle` occurs in the first `limit` bytes of the file. Orca puts the task and dispatch ids in the
@@ -1056,5 +1163,73 @@ mod tests {
         assert!(!mentions(Path::new("/definitely/missing.jsonl"), "run_abc"));
         let _ = fs::remove_file(&near.path);
         let _ = fs::remove_file(&straddling.path);
+    }
+
+    #[test]
+    fn codex_index_gives_titles_archive_state_and_recorded_delegations() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-codex-index.sqlite", std::process::id()));
+        let _ = fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER, cwd TEXT, title TEXT,
+                   tokens_used INTEGER, archived INTEGER, model TEXT, reasoning_effort TEXT, agent_role TEXT, name TEXT,
+                   first_user_message TEXT, preview TEXT);
+                 CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY, status TEXT);
+                 INSERT INTO threads VALUES ('p', '/r/p.jsonl', 100, 5000, '/work/app', 'Generated title', 900, 0, 'gpt-x', 'high', NULL, 'My own name', 'SECRET PROMPT', 'SECRET PREVIEW');
+                 INSERT INTO threads VALUES ('c', '/r/c.jsonl', 110, 4000, '/work/app', 'Child task', 50, 1, NULL, NULL, 'worker', '', 'SECRET', 'SECRET');
+                 INSERT INTO threads VALUES ('old', '/r/o.jsonl', 1, 2, '/work/app', 'Old', 1, 0, NULL, NULL, NULL, NULL, '', '');
+                 INSERT INTO thread_spawn_edges VALUES ('p', 'c', 'open');",
+            )
+            .unwrap();
+        }
+        let threads = codex_threads(&path, 1000);
+        assert_eq!(
+            threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["p", "c"],
+            "newest first, old dropped"
+        );
+        let p = &threads[0];
+        assert_eq!(
+            p.title.as_deref(),
+            Some("My own name"),
+            "a user-set name wins over the generated title"
+        );
+        assert_eq!(
+            (p.tokens_used, p.archived, p.model.as_deref(), p.effort.as_deref()),
+            (900, false, Some("gpt-x"), Some("high"))
+        );
+        let c = &threads[1];
+        assert_eq!(
+            c.title.as_deref(),
+            Some("Child task"),
+            "an empty name falls back to the title"
+        );
+        assert_eq!((c.archived, c.agent_role.as_deref()), (true, Some("worker")));
+        assert_eq!(codex_spawn_edges(&path), [("p".to_string(), "c".to_string())]);
+        assert!(codex_threads(Path::new("/definitely/missing.sqlite"), 0).is_empty());
+        assert!(codex_spawn_edges(Path::new("/definitely/missing.sqlite")).is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_index_tolerates_a_database_without_the_optional_columns() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-codex-index-min.sqlite", std::process::id()));
+        let _ = fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER, cwd TEXT);
+                 INSERT INTO threads VALUES ('a', '/r/a.jsonl', 1, 9000, '/work/app');",
+            )
+            .unwrap();
+        }
+        let threads = codex_threads(&path, 0);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            (threads[0].title.clone(), threads[0].tokens_used, threads[0].archived),
+            (None, 0, false)
+        );
+        let _ = fs::remove_file(&path);
     }
 }
