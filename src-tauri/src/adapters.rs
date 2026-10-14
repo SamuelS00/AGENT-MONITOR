@@ -42,33 +42,49 @@ pub struct TranscriptFile {
 }
 
 fn jsonl_files(dir: &Path) -> Vec<TranscriptFile> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut files: Vec<TranscriptFile> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "jsonl") { return None; }
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                return None;
+            }
             let meta = entry.metadata().ok()?;
-            Some(TranscriptFile { path, modified: meta.modified().ok()?, len: meta.len() })
+            Some(TranscriptFile {
+                path,
+                modified: meta.modified().ok()?,
+                len: meta.len(),
+            })
         })
         .collect();
-    files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    files.sort_by_key(|file| std::cmp::Reverse(file.modified));
     files
 }
 
 /// Claude Code stores transcripts under ~/.claude/projects/<cwd with non-alphanumerics as '-'>.
 pub fn claude_project_dir(home: &Path, cwd: &Path) -> PathBuf {
-    let encoded: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let encoded: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
     home.join(".claude").join("projects").join(encoded)
 }
 
 pub fn claude_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
-    dirs::home_dir().map(|home| jsonl_files(&claude_project_dir(&home, cwd))).unwrap_or_default()
+    dirs::home_dir()
+        .map(|home| jsonl_files(&claude_project_dir(&home, cwd)))
+        .unwrap_or_default()
 }
 
 /// Codex rollout files whose session_meta cwd equals `cwd`, newest first. Only recent day folders are scanned.
 pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
-    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
     let root = home.join(".codex").join("sessions");
     let mut out = Vec::new();
     let cutoff = SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
@@ -76,17 +92,26 @@ pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
         for month in read_dirs(&year) {
             for day in read_dirs(&month) {
                 for file in jsonl_files(&day) {
-                    if file.modified >= cutoff && codex_cwd(&file.path).is_some_and(|c| Path::new(&c) == cwd) { out.push(file); }
+                    if file.modified >= cutoff && codex_cwd(&file.path).is_some_and(|c| Path::new(&c) == cwd) {
+                        out.push(file);
+                    }
                 }
             }
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|file| std::cmp::Reverse(file.modified));
     out
 }
 
 fn read_dirs(path: &Path) -> Vec<PathBuf> {
-    fs::read_dir(path).map(|e| e.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
+    fs::read_dir(path)
+        .map(|e| {
+            e.filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn codex_cwd(path: &Path) -> Option<String> {
@@ -96,25 +121,50 @@ fn codex_cwd(path: &Path) -> Option<String> {
 }
 
 pub fn parse_claude(file: &TranscriptFile) -> Option<SessionUsage> {
-    if file.len > MAX_TRANSCRIPT_BYTES { return None; }
+    if file.len > MAX_TRANSCRIPT_BYTES {
+        return None;
+    }
     let reader = BufReader::new(File::open(&file.path).ok()?);
     let mut by_message: std::collections::HashMap<String, (u64, u64, u64, u64)> = std::collections::HashMap::new();
-    let mut usage = SessionUsage { session_id: file.path.file_stem().map(|s| s.to_string_lossy().into_owned()), ..Default::default() };
+    let mut usage = SessionUsage {
+        session_id: file.path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
     for line in reader.lines().map_while(Result::ok) {
         // Cheap prefilter so unrelated lines are never parsed.
-        if !line.contains("\"usage\"") { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        if v.get("type").and_then(Value::as_str) != Some("assistant") { continue; }
+        if !line.contains("\"usage\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
         let Some(message) = v.get("message") else { continue };
         if let Some(model) = message.get("model").and_then(Value::as_str) {
-            if !model.starts_with('<') { usage.model = Some(model.to_owned()); }
+            if !model.starts_with('<') {
+                usage.model = Some(model.to_owned());
+            }
         }
         if let Some(u) = message.get("usage") {
             let n = |key: &str| u.get(key).and_then(Value::as_u64).unwrap_or(0);
             let input = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
             // The same API message can be logged once per content block; keep the latest counters per id.
-            let id = message.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| format!("line:{}", by_message.len()));
-            by_message.insert(id, (input, n("output_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens")));
+            let id = message
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("line:{}", by_message.len()));
+            by_message.insert(
+                id,
+                (
+                    input,
+                    n("output_tokens"),
+                    n("cache_read_input_tokens"),
+                    n("cache_creation_input_tokens"),
+                ),
+            );
         }
         if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
             usage.started_at.get_or_insert_with(|| ts.to_owned());
@@ -131,23 +181,43 @@ pub fn parse_claude(file: &TranscriptFile) -> Option<SessionUsage> {
 }
 
 pub fn parse_codex(file: &TranscriptFile) -> Option<SessionUsage> {
-    if file.len > MAX_TRANSCRIPT_BYTES { return None; }
+    if file.len > MAX_TRANSCRIPT_BYTES {
+        return None;
+    }
     let reader = BufReader::new(File::open(&file.path).ok()?);
     let mut usage = SessionUsage::default();
     for line in reader.lines().map_while(Result::ok) {
-        let wants_meta = line.starts_with("{\"timestamp\"") && (line.contains("\"session_meta\"") || line.contains("\"turn_context\"") || line.contains("\"token_count\""));
-        if !wants_meta { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let wants_meta = line.starts_with("{\"timestamp\"")
+            && (line.contains("\"session_meta\"")
+                || line.contains("\"turn_context\"")
+                || line.contains("\"token_count\""));
+        if !wants_meta {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let ts = v.get("timestamp").and_then(Value::as_str);
         match v.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 usage.session_id = v.pointer("/payload/id").and_then(Value::as_str).map(str::to_owned);
-                usage.provider = v.pointer("/payload/model_provider").and_then(Value::as_str).map(str::to_owned);
-                usage.started_at = v.pointer("/payload/timestamp").and_then(Value::as_str).map(str::to_owned).or(ts.map(str::to_owned));
+                usage.provider = v
+                    .pointer("/payload/model_provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                usage.started_at = v
+                    .pointer("/payload/timestamp")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or(ts.map(str::to_owned));
             }
             Some("turn_context") => {
-                if let Some(m) = v.pointer("/payload/model").and_then(Value::as_str) { usage.model = Some(m.to_owned()); }
-                if let Some(e) = v.pointer("/payload/effort").and_then(Value::as_str) { usage.effort = Some(e.to_owned()); }
+                if let Some(m) = v.pointer("/payload/model").and_then(Value::as_str) {
+                    usage.model = Some(m.to_owned());
+                }
+                if let Some(e) = v.pointer("/payload/effort").and_then(Value::as_str) {
+                    usage.effort = Some(e.to_owned());
+                }
             }
             Some("event_msg") if v.pointer("/payload/type").and_then(Value::as_str) == Some("token_count") => {
                 if let Some(total) = v.pointer("/payload/info/total_token_usage") {
@@ -160,14 +230,20 @@ pub fn parse_codex(file: &TranscriptFile) -> Option<SessionUsage> {
             }
             _ => {}
         }
-        if let Some(ts) = ts { usage.last_event_at = Some(ts.to_owned()); }
+        if let Some(ts) = ts {
+            usage.last_event_at = Some(ts.to_owned());
+        }
     }
     Some(usage)
 }
 
 /// OpenCode keeps sessions in a SQLite database (WAL mode), not in transcript files.
 pub fn opencode_db_path() -> Option<PathBuf> {
-    let path = dirs::home_dir()?.join(".local").join("share").join("opencode").join("opencode.db");
+    let path = dirs::home_dir()?
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db");
     path.is_file().then_some(path)
 }
 
@@ -182,7 +258,10 @@ pub struct OpencodeSession {
 /// timestamps are selected, never message or part content.
 pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<OpencodeSession> {
     use rusqlite::{Connection, OpenFlags};
-    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX) else { return Vec::new() };
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+    else {
+        return Vec::new();
+    };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
     let Ok(mut stmt) = conn.prepare(
         "SELECT s.id, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
@@ -194,47 +273,56 @@ pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<Op
          WHERE s.directory = ?1 AND s.parent_id IS NULL AND s.time_updated >= ?2
          ORDER BY s.time_updated DESC",
     ) else { return Vec::new() };
-    let rows = stmt.query_map(rusqlite::params![cwd.to_string_lossy(), updated_since_ms as i64], |row| {
-        let id: String = row.get(0)?;
-        let created: i64 = row.get(1)?;
-        let updated: i64 = row.get(2)?;
-        let model_json: Option<String> = row.get(3)?;
-        let n = |i: usize| row.get::<_, i64>(i).map(|v| v.max(0) as u64);
-        let (input, output, reasoning, cache_read, cache_write) = (n(4)?, n(5)?, n(6)?, n(7)?, n(8)?);
-        let cost: Option<f64> = row.get(9)?;
-        let last: Option<String> = row.get(10)?;
-        let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
-            Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
-            None => (None, None),
-        };
-        let recorded = model_json.and_then(|json| serde_json::from_str::<Value>(&json).ok());
-        let field = |key: &str| recorded.as_ref().and_then(|v| v.get(key)).and_then(Value::as_str).map(str::to_owned);
-        let model = field("id").or(last_model);
-        let provider = field("providerID").or(last_provider);
-        let effort = field("variant");
-        let any_tokens = input + output + reasoning + cache_read + cache_write > 0;
-        let iso = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339());
-        Ok(OpencodeSession {
-            id: id.clone(),
-            updated_ms: updated.max(0) as u64,
-            usage: SessionUsage {
-                model,
-                // Same convention as Claude Code: input includes cached input; output includes reasoning.
-                // A session with every counter at zero has not reported usage yet, so it stays unavailable.
-                tokens_in: any_tokens.then_some(input + cache_read + cache_write),
-                tokens_out: any_tokens.then_some(output + reasoning),
-                cache_read: any_tokens.then_some(cache_read),
-                cache_write: any_tokens.then_some(cache_write),
-                reasoning: any_tokens.then_some(reasoning),
-                provider,
-                effort,
-                cost_usd: cost.filter(|_| any_tokens),
-                started_at: iso(created),
-                last_event_at: iso(updated),
-                session_id: Some(id),
-            },
-        })
-    });
+    let rows = stmt.query_map(
+        rusqlite::params![cwd.to_string_lossy(), updated_since_ms as i64],
+        |row| {
+            let id: String = row.get(0)?;
+            let created: i64 = row.get(1)?;
+            let updated: i64 = row.get(2)?;
+            let model_json: Option<String> = row.get(3)?;
+            let n = |i: usize| row.get::<_, i64>(i).map(|v| v.max(0) as u64);
+            let (input, output, reasoning, cache_read, cache_write) = (n(4)?, n(5)?, n(6)?, n(7)?, n(8)?);
+            let cost: Option<f64> = row.get(9)?;
+            let last: Option<String> = row.get(10)?;
+            let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
+                Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
+                None => (None, None),
+            };
+            let recorded = model_json.and_then(|json| serde_json::from_str::<Value>(&json).ok());
+            let field = |key: &str| {
+                recorded
+                    .as_ref()
+                    .and_then(|v| v.get(key))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            };
+            let model = field("id").or(last_model);
+            let provider = field("providerID").or(last_provider);
+            let effort = field("variant");
+            let any_tokens = input + output + reasoning + cache_read + cache_write > 0;
+            let iso = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339());
+            Ok(OpencodeSession {
+                id: id.clone(),
+                updated_ms: updated.max(0) as u64,
+                usage: SessionUsage {
+                    model,
+                    // Same convention as Claude Code: input includes cached input; output includes reasoning.
+                    // A session with every counter at zero has not reported usage yet, so it stays unavailable.
+                    tokens_in: any_tokens.then_some(input + cache_read + cache_write),
+                    tokens_out: any_tokens.then_some(output + reasoning),
+                    cache_read: any_tokens.then_some(cache_read),
+                    cache_write: any_tokens.then_some(cache_write),
+                    reasoning: any_tokens.then_some(reasoning),
+                    provider,
+                    effort,
+                    cost_usd: cost.filter(|_| any_tokens),
+                    started_at: iso(created),
+                    last_event_at: iso(updated),
+                    session_id: Some(id),
+                },
+            })
+        },
+    );
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
 }
 
@@ -262,11 +350,32 @@ mod tests {
         }
         let found = opencode_sessions(&path, Path::new("/x"), 0);
         assert_eq!(found.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a", "empty"]);
-        assert_eq!((found[0].usage.model.as_deref(), found[0].usage.tokens_in, found[0].usage.tokens_out), (Some("m1"), Some(115), Some(5)));
-        assert_eq!((found[0].usage.provider.as_deref(), found[0].usage.cache_read, found[0].usage.reasoning), (Some("p"), Some(100), Some(1)));
+        assert_eq!(
+            (
+                found[0].usage.model.as_deref(),
+                found[0].usage.tokens_in,
+                found[0].usage.tokens_out
+            ),
+            (Some("m1"), Some(115), Some(5))
+        );
+        assert_eq!(
+            (
+                found[0].usage.provider.as_deref(),
+                found[0].usage.cache_read,
+                found[0].usage.reasoning
+            ),
+            (Some("p"), Some(100), Some(1))
+        );
         assert_eq!(found[0].usage.cost_usd, Some(0.25));
         assert_eq!(found[0].usage.effort.as_deref(), Some("high"));
-        assert_eq!((found[1].usage.model.as_deref(), found[1].usage.tokens_in, found[1].usage.tokens_out), (Some("fallback"), None, None));
+        assert_eq!(
+            (
+                found[1].usage.model.as_deref(),
+                found[1].usage.tokens_in,
+                found[1].usage.tokens_out
+            ),
+            (Some("fallback"), None, None)
+        );
         assert!(opencode_sessions(&path, Path::new("/x"), 1800).len() == 1);
         let _ = fs::remove_file(&path);
     }
@@ -275,19 +384,28 @@ mod tests {
         let path = std::env::temp_dir().join(format!("agent-monitor-{}-{name}.jsonl", std::process::id()));
         File::create(&path).unwrap().write_all(body.as_bytes()).unwrap();
         let meta = fs::metadata(&path).unwrap();
-        TranscriptFile { path, modified: meta.modified().unwrap(), len: meta.len() }
+        TranscriptFile {
+            path,
+            modified: meta.modified().unwrap(),
+            len: meta.len(),
+        }
     }
 
     #[test]
     fn claude_dedupes_blocks_of_one_message_and_ignores_content() {
-        let line = |id: &str, out: u64| format!(
-            "{{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T00:00:0{out}Z\",\"message\":{{\"id\":\"{id}\",\"model\":\"claude-sonnet-5-5\",\"content\":[{{\"text\":\"SECRET\"}}],\"usage\":{{\"input_tokens\":2,\"cache_creation_input_tokens\":10,\"cache_read_input_tokens\":20,\"output_tokens\":{out}}}}}}}\n");
+        let line = |id: &str, out: u64| {
+            format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T00:00:0{out}Z\",\"message\":{{\"id\":\"{id}\",\"model\":\"claude-sonnet-5-5\",\"content\":[{{\"text\":\"SECRET\"}}],\"usage\":{{\"input_tokens\":2,\"cache_creation_input_tokens\":10,\"cache_read_input_tokens\":20,\"output_tokens\":{out}}}}}}}\n")
+        };
         let f = temp("claude", &(line("a", 5) + &line("a", 5) + &line("b", 7)));
         let u = parse_claude(&f).unwrap();
         assert_eq!(u.model.as_deref(), Some("claude-sonnet-5-5"));
         assert_eq!(u.tokens_in, Some(64)); // two messages x (2 + 10 + 20)
         assert_eq!(u.tokens_out, Some(12));
-        assert_eq!((u.cache_read, u.cache_write, u.reasoning, u.provider), (Some(40), Some(20), None, None));
+        assert_eq!(
+            (u.cache_read, u.cache_write, u.reasoning, u.provider),
+            (Some(40), Some(20), None, None)
+        );
         let _ = fs::remove_file(&f.path);
     }
 
@@ -306,8 +424,14 @@ mod tests {
 {\"timestamp\":\"t2\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":1}}}}\n\
 {\"timestamp\":\"t3\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":30,\"cached_input_tokens\":20,\"output_tokens\":4,\"reasoning_output_tokens\":3}}}}\n";
         let u = parse_codex(&temp("codex", body)).unwrap();
-        assert_eq!((u.model.as_deref(), u.tokens_in, u.tokens_out), (Some("gpt-a"), Some(30), Some(4)));
-        assert_eq!((u.provider.as_deref(), u.cache_read, u.reasoning), (Some("openai"), Some(20), Some(3)));
+        assert_eq!(
+            (u.model.as_deref(), u.tokens_in, u.tokens_out),
+            (Some("gpt-a"), Some(30), Some(4))
+        );
+        assert_eq!(
+            (u.provider.as_deref(), u.cache_read, u.reasoning),
+            (Some("openai"), Some(20), Some(3))
+        );
         assert_eq!(u.effort.as_deref(), Some("xhigh"));
     }
 

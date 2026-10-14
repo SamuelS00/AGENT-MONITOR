@@ -22,3 +22,11 @@ sysinfo = "0.33"
 tauri = { version = "2", features = [] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
+
+# Lint policy: the monitor must stay read-only and warning-free.
+# `cargo check` surfaces these warnings; CI denies them via `cargo clippy -D warnings`.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

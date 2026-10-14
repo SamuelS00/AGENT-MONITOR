@@ -24,7 +24,13 @@ export function buildIndex(nodes: AgentNode[]): TreeIndex {
   return { byId, children, roots };
 }
 
-export interface Row { node: AgentNode; depth: number; hasChildren: boolean; open: boolean; lastFlags: boolean[] }
+export interface Row {
+  node: AgentNode;
+  depth: number;
+  hasChildren: boolean;
+  open: boolean;
+  lastFlags: boolean[];
+}
 
 /** Flatten to visible rows. `visited` guards against cycles in malformed collector data. */
 export function visibleRows(index: TreeIndex, rootId: string | undefined, expanded: ReadonlySet<string>): Row[] {
@@ -81,7 +87,9 @@ export interface Rollup {
 export function rollupTokens(index: TreeIndex, id: string): Rollup {
   const self = index.byId.get(id);
   const all = self ? [self, ...descendants(index, id)] : [];
-  let sum = 0, withData = 0, inferred = false;
+  let sum = 0,
+    withData = 0,
+    inferred = false;
   for (const n of all) {
     if (n.tokens.reliability === "unavailable" || n.tokens.value === undefined) continue;
     withData++;
@@ -106,7 +114,10 @@ export function parallelIds(siblings: AgentNode[], now: number): Set<string> {
   const iv = siblings.filter((s) => s.startedAt !== undefined).map((s) => ({ id: s.id, a: s.startedAt!, b: s.endedAt ?? now }));
   for (let i = 0; i < iv.length; i++)
     for (let j = i + 1; j < iv.length; j++)
-      if (iv[i].a < iv[j].b && iv[j].a < iv[i].b) { out.add(iv[i].id); out.add(iv[j].id); }
+      if (iv[i].a < iv[j].b && iv[j].a < iv[i].b) {
+        out.add(iv[i].id);
+        out.add(iv[j].id);
+      }
   return out;
 }
 
@@ -126,11 +137,16 @@ export function concurrency(nodes: AgentNode[], now: number): { t: number; n: nu
     if (n.startedAt === undefined) continue;
     const end = n.endedAt ?? (n.status === "running" || n.status === "waiting" || n.status === "idle" ? now : n.startedAt);
     ev.push({ t: n.startedAt, d: 1 }, { t: end, d: -1 });
-    for (const w of n.waits) { ev.push({ t: w.start, d: -1 }, { t: Math.min(w.end ?? end, end), d: 1 }); }
+    for (const w of n.waits) {
+      ev.push({ t: w.start, d: -1 }, { t: Math.min(w.end ?? end, end), d: 1 });
+    }
   }
   ev.sort((a, b) => a.t - b.t || a.d - b.d);
   const out: { t: number; n: number }[] = [];
   let c = 0;
-  for (const e of ev) { c += e.d; out.push({ t: e.t, n: Math.max(0, c) }); }
+  for (const e of ev) {
+    c += e.d;
+    out.push({ t: e.t, n: Math.max(0, c) });
+  }
   return out;
 }
