@@ -1,7 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <g transform="translate(100 100) scale(0.8047)">
-  <rect width="1024" height="1024" rx="224" fill="#171b25"/>
-  <path d="M246 736V288h92l174 272 174-272h92v448h-96V463L542 678h-60L342 463v273z" fill="#e7edf9"/>
-  <circle cx="768" cy="256" r="54" fill="#5bc98d"/>
-</g>
+  <!-- Agent Monitor: an orchestration tree. The root pulses (running); each branch carries the brand color of the
+       model it runs. 824px squircle inside a 100px margin, the macOS icon safe area. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262c3d"/>
+      <stop offset="1" stop-color="#10131b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="330" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d97757" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#d97757" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#glow)"/>
+  <rect x="104" y="104" width="816" height="816" rx="186" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="4"/>
+
+  <!-- links -->
+  <g fill="none" stroke="#7b869d" stroke-width="16" stroke-linecap="round" stroke-opacity="0.75">
+    <path d="M512 340 C512 440 360 420 360 540"/>
+    <path d="M512 340 C512 440 664 420 664 540"/>
+    <path d="M360 560 C360 640 276 630 276 722"/>
+    <path d="M360 560 C360 640 444 630 444 722"/>
+    <path d="M664 560 C664 640 580 630 580 722"/>
+    <path d="M664 560 C664 640 748 630 748 722"/>
+  </g>
+
+  <!-- root: pulsing (running) -->
+  <circle cx="512" cy="330" r="112" fill="none" stroke="#d97757" stroke-opacity="0.28" stroke-width="10"/>
+  <circle cx="512" cy="330" r="84" fill="none" stroke="#d97757" stroke-opacity="0.55" stroke-width="10"/>
+  <circle cx="512" cy="330" r="58" fill="#d97757"/>
+
+  <!-- orchestrators -->
+  <circle cx="360" cy="544" r="46" fill="#10a37f"/>
+  <circle cx="664" cy="544" r="46" fill="#4285f4"/>
+
+  <!-- agents: opaque so the link ends never show through -->
+  <circle cx="276" cy="738" r="34" fill="#0f8a6d"/>
+  <circle cx="444" cy="738" r="34" fill="#0f8a6d"/>
+  <circle cx="580" cy="738" r="34" fill="#3a74d6"/>
+  <circle cx="748" cy="738" r="34" fill="#3a74d6"/>
 </svg>

@@ -2,6 +2,7 @@ import { PanelLeft, PanelRight, RefreshCw, Search } from "lucide-react";
 import { useStore } from "../app/storeContext";
 import { isActive } from "../model/status";
 import { fmtAgo } from "../model/format";
+import { AppMark } from "./AppMark";
 import { NAV } from "./nav";
 import { Kbd, Resizer } from "./primitives";
 
@@ -11,7 +12,12 @@ export function Sidebar() {
     data.sessions.filter((s) => s.projectId === pid && isActive(index.byId.get(s.rootId)?.status ?? "unknown")).length;
   return (
     <aside className="sidebar" style={{ width: sidebarW }} aria-label="Sidebar">
-      <div className="drag-region" data-tauri-drag-region />
+      <div className="drag-region" data-tauri-drag-region>
+        <div className="brand">
+          <AppMark size={18} />
+          <span>Agent Monitor</span>
+        </div>
+      </div>
       <nav className="nav" aria-label="Views">
         {NAV.map(({ view: v, label, icon: Icon, key }) => (
           <button

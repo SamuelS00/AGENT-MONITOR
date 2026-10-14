@@ -1937,3 +1937,25 @@ select.field {
 .bar.brand-bar {
   box-shadow: inset 3px 0 0 var(--brand);
 }
+
+/* Brand mark beside the macOS traffic lights. Clicks pass through to the drag region underneath. */
+.drag-region {
+  display: flex;
+  align-items: center;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: 84px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  user-select: none;
+}
+.app-mark {
+  flex: none;
+  border-radius: 5px;
+}
