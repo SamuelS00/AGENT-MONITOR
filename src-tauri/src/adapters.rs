@@ -440,4 +440,75 @@ mod tests {
         let d = claude_project_dir(Path::new("/h"), Path::new("/Users/a/Desktop/MAC/AGENT-MONITOR"));
         assert!(d.ends_with("-Users-a-Desktop-MAC-AGENT-MONITOR"));
     }
+
+    #[test]
+    fn claude_skips_malformed_lines() {
+        let good = "{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{\"id\":\"a\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n";
+        let f = temp("claude-malformed", &format!("not json\n{{broken\n{good}\n"));
+        let u = parse_claude(&f).unwrap();
+        assert_eq!(
+            (u.model.as_deref(), u.tokens_in, u.tokens_out),
+            (Some("claude-x"), Some(3), Some(4))
+        );
+        let _ = fs::remove_file(&f.path);
+    }
+
+    #[test]
+    fn oversized_transcripts_are_not_parsed() {
+        let mut f = temp("oversized", "{}\n");
+        f.len = MAX_TRANSCRIPT_BYTES + 1;
+        assert!(parse_claude(&f).is_none());
+        assert!(parse_codex(&f).is_none());
+        let _ = fs::remove_file(&f.path);
+    }
+
+    #[test]
+    fn codex_without_token_count_keeps_counters_unavailable() {
+        let body = "{\"timestamp\":\"t0\",\"type\":\"session_meta\",\"payload\":{\"id\":\"s2\",\"cwd\":\"/x\"}}\n";
+        let u = parse_codex(&temp("codex-nocount", body)).unwrap();
+        assert_eq!(
+            (u.tokens_in, u.tokens_out, u.cache_read, u.reasoning),
+            (None, None, None, None)
+        );
+        assert_eq!(u.session_id.as_deref(), Some("s2"));
+    }
+
+    #[test]
+    fn codex_cwd_reads_first_line_only() {
+        let f = temp(
+            "codex-cwd",
+            "{\"payload\":{\"cwd\":\"/first\"}}\n{\"payload\":{\"cwd\":\"/second\"}}\n",
+        );
+        assert_eq!(codex_cwd(&f.path).as_deref(), Some("/first"));
+        let bad = temp("codex-cwd-bad", "garbage\n");
+        assert_eq!(codex_cwd(&bad.path), None);
+        assert_eq!(codex_cwd(Path::new("/definitely/missing.jsonl")), None);
+        let _ = fs::remove_file(&f.path);
+        let _ = fs::remove_file(&bad.path);
+    }
+
+    #[test]
+    fn jsonl_files_lists_only_jsonl_and_tolerates_missing_dir() {
+        let dir = std::env::temp_dir().join(format!("agent-monitor-{}-jsonl-dir", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.jsonl"), "{}").unwrap();
+        fs::write(dir.join("b.txt"), "x").unwrap();
+        let names: Vec<_> = jsonl_files(&dir)
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.jsonl"]);
+        assert!(jsonl_files(&dir.join("missing")).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opencode_missing_or_invalid_db_yields_no_sessions() {
+        assert!(opencode_sessions(Path::new("/definitely/missing.db"), Path::new("/x"), 0).is_empty());
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-invalid.db", std::process::id()));
+        fs::write(&path, "not a database").unwrap();
+        assert!(opencode_sessions(&path, Path::new("/x"), 0).is_empty());
+        let _ = fs::remove_file(&path);
+    }
 }
