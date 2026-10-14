@@ -31,6 +31,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["app", "dmg"],
+    "category": "DeveloperTool",
+    "copyright": "Copyright (c) Agent Monitor contributors"
   }
 }
