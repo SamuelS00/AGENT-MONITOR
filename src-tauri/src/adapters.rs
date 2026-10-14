@@ -551,6 +551,32 @@ pub fn opens_with(path: &Path, needle: &str, limit: u64) -> bool {
     head.windows(needle.len()).any(|window| window == needle.as_bytes())
 }
 
+/// True when `needle` occurs anywhere in the file, streamed in chunks so a large transcript is never held in memory.
+/// Used to find the session that issued an Orca run (its transcript mentions the run id). Only matched, never kept.
+pub fn mentions(path: &Path, needle: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let needle = needle.as_bytes();
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut carried: Vec<u8> = Vec::new();
+    loop {
+        let Ok(read) = file.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            return false;
+        }
+        carried.extend_from_slice(&buffer[..read]);
+        if carried.windows(needle.len()).any(|w| w == needle) {
+            return true;
+        }
+        let keep = needle.len().saturating_sub(1).min(carried.len());
+        carried.drain(..carried.len() - keep);
+    }
+}
+
 /// Orca keeps its orchestration state (runs, tasks, worker dispatches) in a SQLite database of its own.
 pub fn orca_db_path() -> Option<PathBuf> {
     let path = dirs::data_dir()?.join("orca").join("orchestration.db");
@@ -1013,5 +1039,21 @@ mod tests {
         assert!(!opens_with(Path::new("/definitely/missing.jsonl"), "ctx_abc123", 4096));
         let _ = fs::remove_file(&opening.path);
         let _ = fs::remove_file(&later.path);
+    }
+
+    #[test]
+    fn mentions_finds_an_id_anywhere_including_across_chunk_boundaries() {
+        let near = temp("mention-near", "{\"m\":\"run_abc\"}\n");
+        assert!(mentions(&near.path, "run_abc"));
+        assert!(!mentions(&near.path, "run_zzz"));
+        // Place the needle so it straddles the 1 MiB read boundary.
+        let mut body = "x".repeat((1 << 20) - 3);
+        body.push_str("run_abc");
+        body.push_str(&"y".repeat(100));
+        let straddling = temp("mention-straddle", &body);
+        assert!(mentions(&straddling.path, "run_abc"));
+        assert!(!mentions(Path::new("/definitely/missing.jsonl"), "run_abc"));
+        let _ = fs::remove_file(&near.path);
+        let _ = fs::remove_file(&straddling.path);
     }
 }

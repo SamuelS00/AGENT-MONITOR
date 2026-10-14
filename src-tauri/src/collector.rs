@@ -1,7 +1,7 @@
 use crate::adapters::{self, ClaudeSession, CodexRollout, OrcaDispatch, SessionUsage, TranscriptFile};
 use crate::domain::{
-    clean_task, ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability,
-    UsageDetail,
+    clean_task, ExecutionLevel, ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess,
+    Reliability, UsageDetail,
 };
 use chrono::{DateTime, Utc};
 use std::{
@@ -44,11 +44,15 @@ const SAFE_SUBCOMMANDS: &[&str] = &[
 const ORCA_STALE: Duration = Duration::from_secs(10 * 60);
 const LAUNCHERS: &[&str] = &["node", "bun", "deno", "python", "python3", "npx"];
 
+/// (transcript, run id) -> (mtime, length, mentions the run id).
+type RunMentionCache = HashMap<(PathBuf, String), (SystemTime, u64, bool)>;
 type UsageCache = HashMap<PathBuf, (SystemTime, u64, SessionUsage)>;
 
 #[derive(Default)]
 pub struct Collector {
     cache: Mutex<UsageCache>,
+    /// (transcript, run id) -> (mtime, length, mentions the run id). A transcript is rescanned only when it changed.
+    coordinators: Mutex<RunMentionCache>,
 }
 
 fn base_name(value: &str) -> String {
@@ -172,6 +176,8 @@ const ORCA_LINK_SOURCE: &str = "Orca dispatch id in the session's opening prompt
 const ORCA_OPEN_BYTES: u64 = 256 * 1024;
 /// A transcript may start this long before Orca stamps the dispatch (clock and launch skew).
 const ORCA_START_SLACK_S: i64 = 120;
+/// Transcripts larger than this are not scanned for a run id.
+const MAX_COORDINATOR_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The session transcript of one Orca worker, found by evidence and not by guesswork: same agent, same worktree,
 /// written since the dispatch started, and opening with the dispatch id Orca injected into the worker's prompt.
@@ -347,6 +353,32 @@ fn drop_launcher_shims(seen: &mut Vec<Seen>) {
     seen.retain(|item| !shims.contains(&item.pid));
 }
 
+/// Levels from recorded structure only. The meta-orchestrator is set when the run's coordinator is found; an Orca
+/// worker that has Orca workers is an orchestrator, any other Orca worker is an agent, and a native subagent
+/// (a recorded child that is not an Orca worker) is a subagent.
+fn assign_levels(executions: &mut [ExecutionNode]) {
+    // A subagent hanging under a worker reuses the worker's id as a prefix, so the tool tells them apart.
+    let is_worker = |n: &ExecutionNode| n.tool == "Orca" && n.id.starts_with("orca-dispatch:");
+    let with_worker_children: std::collections::HashSet<String> = executions
+        .iter()
+        .filter(|n| is_worker(n))
+        .filter_map(|n| n.parent_id.clone())
+        .collect();
+    for node in executions.iter_mut().filter(|n| n.level.is_none()) {
+        node.level = if is_worker(node) {
+            Some(if with_worker_children.contains(&node.id) {
+                ExecutionLevel::Orchestrator
+            } else {
+                ExecutionLevel::Agent
+            })
+        } else if node.parent_id.is_some() {
+            Some(ExecutionLevel::Subagent)
+        } else {
+            None
+        };
+    }
+}
+
 fn age_of(modified: SystemTime) -> Option<Duration> {
     SystemTime::now().duration_since(modified).ok()
 }
@@ -480,7 +512,13 @@ impl Collector {
         // Sessions no process claimed: the desktop apps host many sessions behind one server process, so the
         // tools' own session stores are the only evidence of which projects are being worked on. Counters are
         // confirmed for the file, but a file does not prove a live process, so status comes from write recency.
-        self.link_orca_workers(&mut executions, &mut claimed, &owner_of_file, &mut node_of_session);
+        self.link_orca_workers(
+            &mut executions,
+            &mut claimed,
+            &owner_of_file,
+            &mut node_of_session,
+            seen.iter().any(|item| item.tool == "Claude Code"),
+        );
         let host_alive = |tool: &str| seen.iter().any(|item| item.tool == tool);
         let mut passive = Vec::new();
         for rollout in adapters::codex_recent_rollouts(SESSION_WINDOW) {
@@ -525,30 +563,13 @@ impl Collector {
             .filter(|s| !claimed.contains(&s.file.path))
             .take(MAX_PASSIVE_SESSIONS)
         {
-            let path = &session.file.path;
-            let short = path
+            let short = session
+                .file
+                .path
                 .file_stem()
                 .map_or_else(String::new, |s| short_id(&s.to_string_lossy()).to_owned());
-            let mut node = ExecutionNode::new(
-                format!("claude-session:{}", path.display()),
-                format!("Worker {short}"),
-                "Claude Code",
-            );
-            node.project_path = session.cwd.filter(|cwd| is_project_dir(Path::new(cwd)));
-            node.status = passive_status(session.file.modified, host_alive("Claude Code"));
-            node.started_at = Some(DateTime::<Utc>::from(session.file.modified).to_rfc3339());
-            node.last_activity_at = node.started_at.clone();
-            if let Some(usage) = self.cached(path, session.file.modified, session.file.len, adapters::parse_claude) {
-                apply_usage(
-                    &mut node,
-                    &usage,
-                    Reliability::Confirmed,
-                    "Claude Code transcript".into(),
-                );
-                node.started_at = usage.started_at.clone().or(node.started_at);
-                node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
-            }
-            let subagents = self.claude_subagent_nodes(path, &node);
+            let (node, subagents) =
+                self.claude_session_node(&session, format!("Worker {short}"), host_alive("Claude Code"));
             passive.push(node);
             passive.extend(subagents);
         }
@@ -596,6 +617,7 @@ impl Collector {
         executions.extend(passive);
 
         attach_parents(&mut executions, &node_of_session, parent_of);
+        assign_levels(&mut executions);
 
         MonitorSnapshot {
             observed_at,
@@ -603,6 +625,50 @@ impl Collector {
             executions,
             collector_error: None,
         }
+    }
+
+    /// A Claude Code session read from its transcript, with the subagents written beside it.
+    fn claude_session_node(
+        &self,
+        session: &ClaudeSession,
+        label: String,
+        host_alive: bool,
+    ) -> (ExecutionNode, Vec<ExecutionNode>) {
+        let path = &session.file.path;
+        let mut node = ExecutionNode::new(format!("claude-session:{}", path.display()), label, "Claude Code");
+        node.project_path = session.cwd.clone().filter(|cwd| is_project_dir(Path::new(cwd)));
+        node.status = passive_status(session.file.modified, host_alive);
+        node.started_at = Some(DateTime::<Utc>::from(session.file.modified).to_rfc3339());
+        node.last_activity_at = node.started_at.clone();
+        if let Some(usage) = self.cached(path, session.file.modified, session.file.len, adapters::parse_claude) {
+            apply_usage(
+                &mut node,
+                &usage,
+                Reliability::Confirmed,
+                "Claude Code transcript".into(),
+            );
+            node.started_at = usage.started_at.clone().or(node.started_at);
+            node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
+        }
+        let subagents = self.claude_subagent_nodes(path, &node);
+        (node, subagents)
+    }
+
+    /// Whether a transcript mentions an Orca run id. Cached per file version: a long transcript is scanned once.
+    fn mentions_run(&self, file: &TranscriptFile, run_id: &str) -> bool {
+        let key = (file.path.clone(), run_id.to_owned());
+        if let Ok(cache) = self.coordinators.lock() {
+            if let Some((modified, len, found)) = cache.get(&key) {
+                if *modified == file.modified && *len == file.len {
+                    return *found;
+                }
+            }
+        }
+        let found = file.len <= MAX_COORDINATOR_SCAN_BYTES && adapters::mentions(&file.path, run_id);
+        if let Ok(mut cache) = self.coordinators.lock() {
+            cache.insert(key, (file.modified, file.len, found));
+        }
+        found
     }
 
     /// Orca worker nodes, enriched with the model and usage of the session each one ran. A session already owned by
@@ -614,6 +680,7 @@ impl Collector {
         claimed: &mut Vec<PathBuf>,
         owner_of_file: &HashMap<PathBuf, String>,
         node_of_session: &mut HashMap<String, String>,
+        claude_host_alive: bool,
     ) {
         let Some(db) = adapters::orca_db_path() else {
             return;
@@ -627,6 +694,7 @@ impl Collector {
         let claude = adapters::claude_recent_sessions(SESSION_WINDOW);
         let codex = adapters::codex_recent_rollouts(SESSION_WINDOW);
         let mut subagents = Vec::new();
+        let mut worker_paths: Vec<PathBuf> = Vec::new();
         for dispatch in &dispatches {
             let id = format!("orca-dispatch:{}", dispatch.id);
             let Some(found) = find_worker_session(dispatch, &claude, &codex) else {
@@ -643,6 +711,7 @@ impl Collector {
             let Some(node) = nodes.iter_mut().find(|n| n.id == id) else {
                 continue;
             };
+            worker_paths.push(found.path.clone());
             apply_usage(node, &usage, Reliability::Confirmed, ORCA_LINK_SOURCE.into());
             node.last_activity_at = usage.last_event_at.clone().or_else(|| node.last_activity_at.take());
             if let Some(session) = usage.session_id.clone() {
@@ -662,6 +731,79 @@ impl Collector {
                     subagents.extend(self.claude_subagent_nodes(&found.path, node));
                 }
             }
+        }
+        // The meta-orchestrator is the session that issued the run: it is the one transcript (not a worker's) written
+        // in the run's worktree since the run began whose text names the run id. A single match is confirmed; with
+        // several, the newest is taken and the edge to its orchestrators is marked inferred.
+        let mut run_ids: Vec<&str> = Vec::new();
+        for dispatch in &dispatches {
+            if !run_ids.contains(&dispatch.run_id.as_str()) {
+                run_ids.push(&dispatch.run_id);
+            }
+        }
+        for run_id in run_ids {
+            let members: Vec<&OrcaDispatch> = dispatches.iter().filter(|d| d.run_id == run_id).collect();
+            let trees: Vec<&str> = members.iter().filter_map(|d| d.worktree_path.as_deref()).collect();
+            let floor = members
+                .iter()
+                .filter_map(|d| d.created_s)
+                .min()
+                .and_then(|s| u64::try_from((s - ORCA_START_SLACK_S).max(0)).ok())
+                .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
+            let eligible = |path: &Path, modified: SystemTime, cwd: Option<&str>| {
+                !worker_paths.iter().any(|w| w == path)
+                    && floor.is_none_or(|floor| modified >= floor)
+                    && (trees.is_empty() || cwd.is_none_or(|cwd| trees.contains(&cwd)))
+            };
+            let mut candidates: Vec<(TranscriptFile, bool)> = Vec::new();
+            for s in &claude {
+                if eligible(&s.file.path, s.file.modified, s.cwd.as_deref()) && self.mentions_run(&s.file, run_id) {
+                    candidates.push((s.file.clone(), true));
+                }
+            }
+            for r in &codex {
+                if eligible(&r.file.path, r.file.modified, r.cwd.as_deref()) && self.mentions_run(&r.file, run_id) {
+                    candidates.push((r.file.clone(), false));
+                }
+            }
+            candidates.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
+            let Some((file, is_claude)) = candidates.first().cloned() else {
+                continue;
+            };
+            let meta_id = if let Some(owner) = owner_of_file.get(&file.path) {
+                owner.clone()
+            } else if is_claude {
+                let Some(session) = claude.iter().find(|s| s.file.path == file.path) else {
+                    continue;
+                };
+                let label = session
+                    .cwd
+                    .as_deref()
+                    .map_or_else(|| "Meta-orchestrator".into(), |cwd| dir_label(cwd, "Meta-orchestrator"));
+                let (node, subs) = self.claude_session_node(session, label, claude_host_alive);
+                claimed.push(file.path.clone());
+                let id = node.id.clone();
+                executions.push(node);
+                executions.extend(subs);
+                id
+            } else {
+                continue;
+            };
+            if let Some(meta) = executions.iter_mut().find(|n| n.id == meta_id) {
+                meta.level = Some(ExecutionLevel::Meta);
+            }
+            let run_node_id = format!("orca-run:{run_id}");
+            let confirmed = candidates.len() == 1;
+            for node in nodes
+                .iter_mut()
+                .filter(|n| n.parent_id.as_deref() == Some(run_node_id.as_str()))
+            {
+                node.parent_id = Some(meta_id.clone());
+                if !confirmed {
+                    node.relationship = Reliability::Inferred;
+                }
+            }
+            nodes.retain(|n| n.id != run_node_id);
         }
         executions.extend(nodes);
         executions.extend(subagents);
@@ -1201,6 +1343,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn levels_follow_recorded_structure() {
+        let mut meta = node("claude-session:meta");
+        meta.level = Some(ExecutionLevel::Meta);
+        let mut orch = node("orca-dispatch:o");
+        orch.parent_id = Some("claude-session:meta".into());
+        let mut agent = node("orca-dispatch:a");
+        agent.parent_id = Some("orca-dispatch:o".into());
+        let mut solo = node("orca-dispatch:solo");
+        solo.parent_id = Some("claude-session:meta".into());
+        let mut sub = node("claude-session:meta:subagent:x");
+        sub.parent_id = Some("orca-dispatch:a".into());
+        let plain = node("execution:process:1:1");
+        // Real shape: a native subagent under an Orca worker carries the worker's id as a prefix.
+        let mut nested = node("orca-dispatch:a:subagent:y");
+        nested.parent_id = Some("orca-dispatch:a".into());
+        let mut nodes = vec![meta, orch, agent, solo, sub, plain, nested];
+        for n in nodes
+            .iter_mut()
+            .filter(|n| n.id.starts_with("orca-dispatch:") && !n.id.contains(":subagent:"))
+        {
+            n.tool = "Orca".into();
+        }
+        assign_levels(&mut nodes);
+        let level = |id: &str| nodes.iter().find(|n| n.id == id).unwrap().level;
+        assert_eq!(level("claude-session:meta"), Some(ExecutionLevel::Meta));
+        assert_eq!(level("orca-dispatch:o"), Some(ExecutionLevel::Orchestrator));
+        assert_eq!(level("orca-dispatch:a"), Some(ExecutionLevel::Agent));
+        assert_eq!(
+            level("orca-dispatch:solo"),
+            Some(ExecutionLevel::Agent),
+            "a worker with no workers is an agent"
+        );
+        assert_eq!(level("claude-session:meta:subagent:x"), Some(ExecutionLevel::Subagent));
+        assert_eq!(
+            level("execution:process:1:1"),
+            None,
+            "a plain session has no orchestration level"
+        );
+    }
+
     /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator
     /// run with two orchestrators, their agents and one subagent, read through the real SQL and mapping.
     #[test]
@@ -1258,9 +1441,10 @@ mod tests {
         }
         for e in &snapshot.executions {
             println!(
-                "{:<12} {:?} proj={:?} {:?} parent={:?} id={} task={:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
+                "{:<12} {:?}/{:?} proj={:?} {:?} parent={:?} id={} task={:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
                 e.tool,
                 e.role,
+                e.level,
                 e.project_path,
                 e.status,
                 e.parent_id.as_deref().map(|p| &p[p.len().saturating_sub(8)..]),

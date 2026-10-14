@@ -39,6 +39,18 @@ pub enum ExecutionRole {
     Service,
 }
 
+/// Where a node sits in an orchestration. Only set from recorded structure: the session that created an Orca run is the
+/// meta-orchestrator, Orca workers that have workers are orchestrators, the other Orca workers are agents, and native
+/// subagents are subagents. `None` for plain sessions and services.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionLevel {
+    Meta,
+    Orchestrator,
+    Agent,
+    Subagent,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObservedProcess {
@@ -90,6 +102,7 @@ pub struct ExecutionNode {
     pub parent_id: Option<String>,
     pub process_id: Option<String>,
     pub role: ExecutionRole,
+    pub level: Option<ExecutionLevel>,
     /// Working directory the tool itself recorded (or the process was started in); `None` when unknown.
     pub project_path: Option<String>,
     pub label: String,
@@ -122,6 +135,7 @@ impl ExecutionNode {
             parent_id: None,
             process_id: None,
             role: ExecutionRole::Session,
+            level: None,
             project_path: None,
             label,
             task: None,
@@ -169,6 +183,7 @@ mod tests {
         assert_eq!(value["relationship"], "inferred");
         assert_eq!(value["role"], "session");
         assert!(value["task"].is_null());
+        assert!(value["level"].is_null());
         assert!(value["projectPath"].is_null());
     }
 
