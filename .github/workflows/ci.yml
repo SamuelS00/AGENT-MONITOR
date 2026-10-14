@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend - types, lint, format, tests
+    name: Frontend - types, lint, format, tests, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -32,6 +32,8 @@ jobs:
         run: pnpm run format:check
       - name: Unit tests
         run: pnpm run test
+      - name: Build
+        run: pnpm run build
 
   rust:
     name: Rust - fmt, clippy, tests
