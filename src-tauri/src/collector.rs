@@ -396,7 +396,11 @@ impl Collector {
                 "Codex",
             );
             node.project_path = rollout.cwd.filter(|cwd| is_project_dir(Path::new(cwd)));
-            node.status = passive_status(rollout.file.modified, host_alive("Codex"));
+            node.status = if rollout.archived {
+                ExecutionStatus::Archived
+            } else {
+                passive_status(rollout.file.modified, host_alive("Codex"))
+            };
             node.started_at = Some(DateTime::<Utc>::from(rollout.file.modified).to_rfc3339());
             node.last_activity_at = node.started_at.clone();
             if let Some(usage) = self.cached(path, rollout.file.modified, rollout.file.len, adapters::parse_codex) {
@@ -437,7 +441,11 @@ impl Collector {
                     parent_of.push((node.id.clone(), parent.clone()));
                 }
                 node.project_path = Some(session.directory.clone()).filter(|d| is_project_dir(Path::new(d)));
-                node.status = passive_status(modified, host_alive("OpenCode"));
+                node.status = if session.archived {
+                    ExecutionStatus::Archived
+                } else {
+                    passive_status(modified, host_alive("OpenCode"))
+                };
                 node.started_at = session.usage.started_at.clone();
                 node.last_activity_at = session.usage.last_event_at.clone();
                 apply_usage(

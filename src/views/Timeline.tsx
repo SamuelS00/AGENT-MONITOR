@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "../app/storeContext";
-import { concurrency, descendants, visibleRows } from "../model/tree";
+import { concurrency, descendants, endOf, isLive, visibleRows } from "../model/tree";
 import { fmtClock, fmtDate, fmtDuration, fmtShortClock } from "../model/format";
 import { STATUS_LABEL } from "../model/status";
 import { Banner, EmptyState, Segmented, StatusGlyph } from "../ui/primitives";
@@ -137,9 +137,9 @@ export function Timeline() {
             </div>
           </div>
           {rows.map(({ node: n, depth, hasChildren, open }) => {
-            const end = n.endedAt ?? (n.status === "running" || n.status === "waiting" || n.status === "idle" ? now : undefined);
+            const end = endOf(n, now);
             const hasBar = n.startedAt !== undefined && end !== undefined && end >= t0 && n.startedAt <= t1;
-            const live = n.endedAt === undefined && (n.status === "running" || n.status === "waiting");
+            const live = n.endedAt === undefined && isLive(n.status);
             return (
               <div
                 key={n.id}
@@ -172,7 +172,7 @@ export function Timeline() {
                     <span
                       className={`bar bar-${n.status} ${live ? "bar-live" : ""} ${n.startedAt! < t0 ? "clip-l" : ""}`}
                       style={{ left: `${pct(n.startedAt!)}%`, width: `${Math.max(0.35, pct(end!) - pct(n.startedAt!))}%` }}
-                      title={`${n.label} · ${STATUS_LABEL[n.status]}\n${fmtClock(n.startedAt!)} → ${n.endedAt ? fmtClock(n.endedAt) : "now"} (${fmtDuration(end! - n.startedAt!)})`}
+                      title={`${n.label} · ${STATUS_LABEL[n.status]}\n${fmtClock(n.startedAt!)} → ${n.endedAt ? fmtClock(n.endedAt) : live ? "now" : `${fmtClock(end!)} (last activity)`} (${fmtDuration(end! - n.startedAt!)})`}
                     >
                       {n.waits.map((w, i) => (
                         <span

@@ -22,6 +22,8 @@ pub enum ExecutionStatus {
     Failed,
     /// A live process, or a live host, with no recent activity.
     Idle,
+    /// The tool itself moved the session to its archive (Codex `archived_sessions`, OpenCode `time_archived`).
+    Archived,
     /// No live process observed and nothing written recently. Says nothing about how the session ended.
     Inactive,
     Completed,

@@ -101,10 +101,25 @@ export function rollupTokens(index: TreeIndex, id: string): Rollup {
   return { tokens, partial, nodes: all.length, withData };
 }
 
+/** Only these keep the clock running. Anything else stopped counting at its last recorded activity. */
+export const isLive = (s: AgentStatus) => s === "running" || s === "waiting";
+
+/** Where a node's span ends: the recorded end, "now" while live, otherwise its last recorded activity. */
+export function endOf(n: AgentNode, now: number): number | undefined {
+  if (n.endedAt !== undefined) return n.endedAt;
+  if (isLive(n.status)) return now;
+  const last = n.lastActivityAt;
+  if (last !== undefined && (n.startedAt === undefined || last >= n.startedAt)) return last;
+  return n.status === "idle" ? now : undefined;
+}
+
 export function durationMs(n: AgentNode, now: number): Metric<number> {
   if (n.startedAt === undefined) return unavailable();
   if (n.endedAt !== undefined) return confirmed(n.endedAt - n.startedAt, n.source);
-  if (n.status === "running" || n.status === "waiting" || n.status === "idle") return confirmed(now - n.startedAt, n.source);
+  if (isLive(n.status)) return confirmed(now - n.startedAt, n.source);
+  // Not running: the clock stops at the last recorded activity. That is a lower bound, not a recorded end.
+  const end = endOf(n, now);
+  if (end !== undefined && n.lastActivityAt !== undefined) return estimated(end - n.startedAt, "last recorded activity");
   return unavailable(n.source); // finished or lost with no recorded end: do not invent one
 }
 
@@ -135,7 +150,7 @@ export function concurrency(nodes: AgentNode[], now: number): { t: number; n: nu
   const ev: { t: number; d: number }[] = [];
   for (const n of nodes) {
     if (n.startedAt === undefined) continue;
-    const end = n.endedAt ?? (n.status === "running" || n.status === "waiting" || n.status === "idle" ? now : n.startedAt);
+    const end = endOf(n, now) ?? n.startedAt;
     ev.push({ t: n.startedAt, d: 1 }, { t: end, d: -1 });
     for (const w of n.waits) {
       ev.push({ t: w.start, d: -1 }, { t: Math.min(w.end ?? end, end), d: 1 });

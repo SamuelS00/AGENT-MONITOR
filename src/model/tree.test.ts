@@ -3,7 +3,7 @@
 // agent's own usage counts exactly once, and missing data stays explicit
 // instead of becoming a fabricated total.
 import { describe, expect, it } from "vitest";
-import { buildIndex, durationMs, rollupTokens, type TreeIndex } from "./tree";
+import { buildIndex, durationMs, endOf, rollupTokens, type TreeIndex } from "./tree";
 import { confirmed, estimated, unavailable } from "./format";
 import type { AgentNode } from "./types";
 
@@ -86,6 +86,25 @@ describe("durationMs", () => {
   it("measures elapsed time for active nodes", () => {
     const n = node({ id: "fixture-live", label: "Live", status: "running", startedAt: 900_000 });
     expect(durationMs(n, now).value).toBe(100_000);
+  });
+
+  it("stops the clock at the last recorded activity once a node is not running", () => {
+    for (const status of ["idle", "inactive", "archived", "completed", "failed"] as const) {
+      const n = node({ id: `fixture-${status}`, label: status, status, startedAt: 900_000, lastActivityAt: 930_000 });
+      const d = durationMs(n, now);
+      expect(d.value, status).toBe(30_000);
+      expect(d.reliability, status).toBe("inferred");
+      // The reading must not grow with the wall clock.
+      expect(durationMs(n, now + 5_000_000).value, status).toBe(30_000);
+    }
+  });
+
+  it("keeps counting only while running or waiting", () => {
+    for (const status of ["running", "waiting"] as const) {
+      const n = node({ id: `fixture-${status}`, label: status, status, startedAt: 900_000, lastActivityAt: 910_000 });
+      expect(durationMs(n, now).value).toBe(100_000);
+      expect(endOf(n, now)).toBe(now);
+    }
   });
 
   it("stays unavailable when the start is unknown", () => {

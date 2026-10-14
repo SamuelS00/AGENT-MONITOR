@@ -76,6 +76,7 @@
   --status-disconnected: #78746b;
   --status-idle: #78746b;
   --status-inactive: #78746b;
+  --status-archived: #78746b;
   --status-unknown: #78746b;
   --status-running-bg: rgb(45 138 87 / 0.13);
   --status-waiting-bg: rgb(168 113 15 / 0.14);
@@ -119,6 +120,7 @@
   --status-disconnected: #8d887d;
   --status-idle: #8d887d;
   --status-inactive: #8d887d;
+  --status-archived: #8d887d;
   --status-unknown: #8d887d;
   --status-running-bg: rgb(95 192 138 / 0.15);
   --status-waiting-bg: rgb(220 168 71 / 0.16);

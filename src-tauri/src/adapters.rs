@@ -115,25 +115,29 @@ pub fn codex_transcripts(cwd: &Path) -> Vec<TranscriptFile> {
 pub struct CodexRollout {
     pub file: TranscriptFile,
     pub cwd: Option<String>,
+    /// Lives in `archived_sessions`: Codex itself archived it.
+    pub archived: bool,
 }
 
 /// Rollouts written within `window`, from the live and the archived folders, newest first. Not tied to any process:
 /// the Codex desktop app hosts many sessions behind one `app-server` process whose own cwd says nothing about them.
 pub fn codex_recent_rollouts(window: std::time::Duration) -> Vec<CodexRollout> {
     let cutoff = SystemTime::now() - window;
-    let mut files = codex_rollout_files(cutoff);
+    let mut files: Vec<(TranscriptFile, bool)> = codex_rollout_files(cutoff).into_iter().map(|f| (f, false)).collect();
     if let Some(home) = dirs::home_dir() {
         files.extend(
             jsonl_files(&home.join(".codex").join("archived_sessions"))
                 .into_iter()
-                .filter(|file| file.modified >= cutoff),
+                .filter(|file| file.modified >= cutoff)
+                .map(|f| (f, true)),
         );
     }
-    files.sort_by_key(|file| std::cmp::Reverse(file.modified));
+    files.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
     files
         .into_iter()
-        .map(|file| CodexRollout {
+        .map(|(file, archived)| CodexRollout {
             cwd: codex_cwd(&file.path),
+            archived,
             file,
         })
         .collect()
@@ -365,6 +369,8 @@ pub struct OpencodeSession {
     pub directory: String,
     /// Delegating session, as recorded in the `parent_id` column. `None` for root sessions.
     pub parent_id: Option<String>,
+    /// OpenCode archived the session (`time_archived` is set).
+    pub archived: bool,
     pub updated_ms: u64,
     pub usage: SessionUsage,
 }
@@ -394,13 +400,23 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
         .and_then(|mut q| q.exists([]))
         .unwrap_or(false);
     let agent_column = if has_agent { "s.agent" } else { "NULL" };
+    let has_archived = conn
+        .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'time_archived'")
+        .and_then(|mut q| q.exists([]))
+        .unwrap_or(false);
+    let archived_column = if has_archived {
+        "s.time_archived IS NOT NULL"
+    } else {
+        "0"
+    };
     let sql = format!(
         "SELECT s.id, s.directory, s.parent_id, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
                 s.tokens_cache_read, s.tokens_cache_write, s.cost,
                 (SELECT json_extract(m.data, '$.modelID') || char(31) || coalesce(json_extract(m.data, '$.providerID'), '') FROM message m
                   WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
                   ORDER BY m.time_created DESC LIMIT 1),
-                {agent_column}
+                {agent_column},
+                {archived_column}
          FROM session s
          WHERE (?1 IS NULL OR s.directory = ?1) AND (?3 OR s.parent_id IS NULL) AND s.time_updated >= ?2
          ORDER BY s.time_updated DESC"
@@ -426,6 +442,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
             let cost: Option<f64> = row.get(11)?;
             let last: Option<String> = row.get(12)?;
             let agent: Option<String> = row.get(13)?;
+            let archived: bool = row.get(14)?;
             let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
                 Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
                 None => (None, None),
@@ -447,6 +464,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
                 id: id.clone(),
                 directory,
                 parent_id: parent_id.clone(),
+                archived,
                 updated_ms: updated.max(0) as u64,
                 usage: SessionUsage {
                     model,
@@ -804,6 +822,28 @@ mod tests {
         assert_eq!(find("kid").depth, 2);
         assert!(find("root").heartbeat_s.is_some() && find("kid").completed_s.is_some());
         assert!(orca_dispatches(Path::new("/definitely/missing.db"), 0).is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opencode_archived_sessions_are_flagged_only_when_the_tool_archived_them() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-archived.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT, model TEXT, time_created INTEGER, time_updated INTEGER,
+                   tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER,
+                   cost REAL, time_archived INTEGER);
+                 CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+                 INSERT INTO session VALUES ('live', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, NULL);
+                 INSERT INTO session VALUES ('shelved', NULL, '/x', NULL, 1, 2, 0, 0, 0, 0, 0, 0.0, 99);",
+            )
+            .unwrap();
+        }
+        let found = opencode_recent_sessions(&path, 0);
+        let archived = |id: &str| found.iter().find(|s| s.id == id).unwrap().archived;
+        assert!(!archived("live") && archived("shelved"));
         let _ = fs::remove_file(&path);
     }
 }
