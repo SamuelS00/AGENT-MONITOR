@@ -4,7 +4,7 @@ Local, read-only macOS desktop monitor for CLI-based AI agent activity. The MVP 
 
 ## Current status
 
-Implemented: Tauri/React foundation, local process discovery for Codex, Claude Code, OpenCode and Gemini CLI names, SQLite snapshot persistence, and a read-only Codex session-artifact adapter. Model, tokens, and parent-child delegation are displayed only when a verified adapter can provide them.
+Implemented: Tauri/React foundation, local process discovery for Codex, Claude Code, OpenCode and Gemini CLI names, SQLite snapshot persistence, and read-only adapters for Codex, Claude Code and OpenCode sessions and for Orca orchestration runs. Sessions, subagents and Orca workers are listed with their project, status, model and usage. Model, tokens, and parent-child delegation are displayed only when a verified adapter can provide them, and each carries its source and reliability. See `docs/architecture/integrations.md`.
 
 ## Development
 
@@ -24,6 +24,7 @@ pnpm run check        # TypeScript
 pnpm run lint         # ESLint
 pnpm run format:check # Prettier
 pnpm run test         # Vitest
+pnpm run validate     # check + lint + format:check + test + build
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -32,4 +33,4 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Privacy
 
-The collector is local and read-only. It does not send session data anywhere and the initial Codex adapter reads file metadata only, not prompts or conversation content. See `docs/architecture/collector.md` and ADR 0004.
+The collector is local and read-only. It does not send session data anywhere, does not read prompts or conversation content, and stores process command lines without flag values or free text. Short titles the tools recorded themselves are shown as "what an agent is working on". See `docs/architecture/collector.md` and ADR 0004.

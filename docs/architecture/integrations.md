@@ -1,23 +1,59 @@
 # Integration compatibility matrix
 
-| Tool        | Installed    | Process discovery      | Local session metadata                                         | Model/tokens                                                                                                                                                                      | Agent hierarchy |
-| ----------- | ------------ | ---------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Codex CLI   | yes          | supported              | rollout files in `~/.codex/sessions` and `archived_sessions`   | model, cumulative tokens: confirmed per file; per process: inferred by working directory                                                                                          | not verified    |
-| Claude Code | yes          | supported              | transcripts in `~/.claude/projects/<cwd>`                      | model, tokens: inferred per process (working directory + recency), confirmed when the command line names the session id                                                           | not verified    |
-| OpenCode    | yes          | supported              | SQLite `~/.local/share/opencode/opencode.db`, opened read-only | model, tokens (input + cache read/write, output + reasoning): inferred per process by working directory, confirmed when the command line names the session id; root sessions only | not verified    |
-| Gemini CLI  | not detected | partial: name matching | unavailable                                                    | unavailable                                                                                                                                                                       | unavailable     |
+| Tool        | Installed    | Process discovery      | Local session store                                            | Model/tokens                                                                                                                        | Agent hierarchy (confirmed by)                                |
+| ----------- | ------------ | ---------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Codex CLI   | yes          | supported              | rollouts in `~/.codex/sessions` and `archived_sessions`        | confirmed per rollout; per process inferred by working directory                                                                    | `parent_thread_id` in `session_meta`                          |
+| Claude Code | yes          | supported              | transcripts in `~/.claude/projects/<project>/<session>.jsonl`  | confirmed per transcript; per process inferred by working directory, confirmed when the command names the session (`--resume <id>`) | `<session>/subagents/agent-*.jsonl` written by Claude Code    |
+| OpenCode    | yes          | supported              | SQLite `~/.local/share/opencode/opencode.db`, opened read-only | confirmed per session; per process inferred by working directory                                                                    | `parent_id` column of the `session` table                     |
+| Orca        | yes          | not a CLI agent        | SQLite `~/Library/Application Support/orca/orchestration.db`   | none recorded by Orca; the model and usage come from the worker's own session (see below)                                           | `tasks.parent_id` and `dispatch_contexts.creator_dispatch_id` |
+| Gemini CLI  | not detected | partial: name matching | unavailable                                                    | unavailable                                                                                                                         | unavailable                                                   |
 
 “Partial” never means data is fabricated. New adapters must document a validated path, parser version and confidence level before enabling fields.
 
 ## Usage adapters (`src-tauri/src/adapters.rs`)
 
-- Read-only. They extract the model name, token counters and timestamps; message content is never kept or returned.
+- Read-only. They extract the model name, token counters, timestamps and the short titles listed under "What an agent is working on"; message content is never kept or returned.
 - Claude Code: tokens in = input + cache creation + cache read, tokens out = output. A message logged once per content block is counted once (by message id).
 - Codex: the last cumulative `total_token_usage` of the rollout file; model from the last `turn_context`.
 - A transcript is paired with at most one process (same tool and working directory, written after the process started). Without a session id in the command line the pairing is `inferred`, and the UI shows it with `≈`.
-- Process recognition uses the executable (or the script a launcher runs), never a substring of the command line, so desktop-app helper processes are not reported as agents.
-- OpenCode: reads `session` rows (`directory`, `model`, `tokens_*`) from the local database with a read-only connection; message and part content is never selected. Model falls back to the last assistant message `modelID`. A session whose counters are all zero stays unavailable. Subagent sessions (`parent_id` set) are not paired with processes, and no delegation edge is inferred from them here.
+- Process recognition uses the name the process was started as (`argv[0]`), or the script a launcher runs, never a substring of the command line. Desktop-app helpers are not agents, and neither are workers a CLI re-executes from its own binary (Claude Code runs `ugrep` that way).
+- A launcher (`node codex.js`) and the native binary it starts count as one agent: the launcher is dropped when a same-tool process in the same directory names it as its parent. This is de-duplication, not a delegation edge.
+- A session id named on the command line (`--resume <id>`) reserves that transcript for its process; another process in the same directory cannot take it by the newest-file heuristic.
+- OpenCode: reads `session` rows (`directory`, `model`, `tokens_*`) from the local database with a read-only connection; message and part content is never selected. Model falls back to the last assistant message `modelID`. A session whose counters are all zero stays unavailable. Optional columns (`agent`, `time_archived`, `title`) are used only when the database has them.
 - Gemini CLI: still unavailable until a real session file is inspected and documented.
+
+## Sessions without a process
+
+The desktop apps host many sessions behind one server process (`codex app-server`, `codex exec-server`, `opencode serve`), whose own working directory says nothing about them. These servers are `role: service`, grouped as "Background services", and own no project. Sessions are listed from the tools' own stores instead, for the last 24 hours (at most 30 per tool): Codex rollouts, OpenCode sessions and Claude Code transcripts, each with the working directory the tool recorded. A session already owned by a live process is not listed twice.
+
+## Status
+
+Status comes from evidence, never from the clock alone:
+
+| Status      | Meaning                                                                                              |
+| ----------- | ---------------------------------------------------------------------------------------------------- |
+| Running     | A live process with recent activity, or a session file written in the last 2 minutes                 |
+| Idle        | A live process, or a live host, with no recent activity (up to 30 minutes for process-less sessions) |
+| Needs input | Blocked on another agent or on a dispatch that has not started (Orca)                                |
+| Stopped     | No live process observed and nothing written recently. It does not say whether the session finished  |
+| Archived    | The tool itself archived the session (Codex `archived_sessions`, OpenCode `time_archived`)           |
+| Completed   | Only where the tool records completion (Orca)                                                        |
+| Failed      | Only where the tool records failure (Orca)                                                           |
+
+The UI stops the clock of any node that is not running or waiting at its last recorded activity and marks the value as estimated.
+
+## What an agent is working on
+
+The `task` field carries a short title the tool recorded itself, capped at 140 characters with whitespace collapsed: the Orca task title, the Claude Code subagent `description` of its `.meta.json`, and the OpenCode session title (its "New session - ..." placeholder is ignored). Task specs, objectives, results, prompts and message bodies are never read.
+
+## Orca
+
+`orchestration.db` is opened read-only. Only identifiers, states, depth, timestamps, task titles, the worktree and the launched agent are selected.
+
+- A run is the root; each dispatch is a worker under it.
+- A worker hangs under the worker that created it when `creator_dispatch_id` names another assignee, else under the dispatch of its parent task (`tasks.parent_id`, set by `worker-start --parent`), else under its run. Orca 1.4 fences dispatched workers from starting workers, so the coordinator records orchestrator → agent structure through `--parent`.
+- Task dependencies (`deps`) are ordering, not delegation, and are not shown as edges.
+- Orca records no model or tokens. A worker is matched to its real session by evidence: the same agent and worktree, a transcript written since the dispatch started, and one that opens with the dispatch id Orca injects in the worker prompt. The match is confirmed, and the model, tokens and subagents of that session are shown on the worker. The transcript is only searched for the id; nothing from it is kept. If a live process owns that session, its node is folded into the worker.
 
 ## Usage breakdown fields
 
