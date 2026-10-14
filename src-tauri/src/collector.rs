@@ -142,6 +142,25 @@ fn session_id_in(args: &[String]) -> Option<String> {
     })
 }
 
+/// Attach each delegated session to its parent. A delegation is recorded only when the tool named the parent
+/// session and that session is in this snapshot. Process ancestry is never used, a session is never its own
+/// parent, and a child whose parent is not observed stays a root rather than getting an invented one.
+fn attach_parents(
+    executions: &mut [ExecutionNode],
+    node_of_session: &HashMap<String, String>,
+    parent_of: Vec<(String, String)>,
+) {
+    for (child, parent_session) in parent_of {
+        let Some(parent) = node_of_session.get(&parent_session).filter(|parent| **parent != child) else {
+            continue;
+        };
+        if let Some(node) = executions.iter_mut().find(|node| node.id == child) {
+            node.parent_id = Some(parent.clone());
+            node.relationship = Reliability::Confirmed;
+        }
+    }
+}
+
 fn age_of(modified: SystemTime) -> Option<Duration> {
     SystemTime::now().duration_since(modified).ok()
 }
@@ -336,17 +355,7 @@ impl Collector {
         }
         executions.extend(passive);
 
-        // A delegation is recorded only when the tool named the parent session and that session is in this
-        // snapshot. Process ancestry is never used. A subagent whose parent is out of the window stays a root.
-        for (child, parent_session) in parent_of {
-            let Some(parent) = node_of_session.get(&parent_session).filter(|parent| **parent != child) else {
-                continue;
-            };
-            if let Some(node) = executions.iter_mut().find(|node| node.id == child) {
-                node.parent_id = Some(parent.clone());
-                node.relationship = Reliability::Confirmed;
-            }
-        }
+        attach_parents(&mut executions, &node_of_session, parent_of);
 
         MonitorSnapshot {
             observed_at,
@@ -663,6 +672,37 @@ mod tests {
         assert!(matches!(passive_status(ago(600), true), ExecutionStatus::Idle));
         assert!(matches!(passive_status(ago(600), false), ExecutionStatus::Inactive));
         assert!(matches!(passive_status(ago(86_400), true), ExecutionStatus::Inactive));
+    }
+
+    fn node(id: &str) -> ExecutionNode {
+        ExecutionNode::new(id.into(), id.into(), "Codex")
+    }
+
+    #[test]
+    fn delegation_needs_a_named_parent_that_was_observed() {
+        let mut nodes = vec![node("root"), node("child"), node("orphan"), node("self")];
+        let sessions: HashMap<String, String> = [("s-root", "root"), ("s-self", "self")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        attach_parents(
+            &mut nodes,
+            &sessions,
+            vec![
+                ("child".into(), "s-root".into()),
+                ("orphan".into(), "s-missing".into()),
+                ("self".into(), "s-self".into()),
+            ],
+        );
+        let parent = |id: &str| nodes.iter().find(|n| n.id == id).unwrap().parent_id.clone();
+        assert_eq!(parent("child").as_deref(), Some("root"));
+        assert_eq!(parent("orphan"), None, "unobserved parent must not be invented");
+        assert_eq!(parent("self"), None, "a session is never its own parent");
+        assert_eq!(parent("root"), None);
+        let child = nodes.iter().find(|n| n.id == "child").unwrap();
+        assert!(matches!(child.relationship, Reliability::Confirmed));
+        let orphan = nodes.iter().find(|n| n.id == "orphan").unwrap();
+        assert!(matches!(orphan.relationship, Reliability::Unavailable));
     }
 
     /// Manual smoke test against this machine: `cargo test live_snapshot -- --ignored --nocapture`.

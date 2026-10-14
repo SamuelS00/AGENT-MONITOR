@@ -4,7 +4,7 @@
 // presented as unavailable, never invented as zero, and sample data must be
 // labeled as sample data.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { loadSnapshot, refreshCollector } from "./monitor";
 import type { MonitorSnapshot, ObservedProcess, ExecutionNode } from "./types";
@@ -91,6 +91,30 @@ describe("App (live source)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("App (orchestration)", () => {
+  it("shows a recorded subagent under its session in the explorer", async () => {
+    const child: ExecutionNode = {
+      ...fixtureExecution,
+      id: "fixture-execution:child",
+      parentId: fixtureExecution.id,
+      processId: undefined,
+      label: "Fixture subagent",
+      status: "idle",
+    };
+    loadMock.mockResolvedValue({ ...fixtureSnapshot, executions: [fixtureExecution, child] });
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+    // One session row for the project: the subagent is nested, not listed as a second session.
+    expect(screen.queryByText("Fixture subagent")).not.toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Execution Explorer/ }));
+    const root = await screen.findAllByText("Fixture agent run");
+    expect(root.length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /expand|Expand/ }));
+    expect(await screen.findByText("Fixture subagent")).toBeInTheDocument();
   });
 });
 
