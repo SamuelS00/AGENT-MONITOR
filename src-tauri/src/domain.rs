@@ -2,11 +2,24 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Reliability { Confirmed, Inferred, Unavailable }
+pub enum Reliability {
+    Confirmed,
+    Inferred,
+    Unavailable,
+}
 
+// The enum variants below model the full domain contract from
+// docs/architecture/data-model.md. Not every status is constructible yet,
+// but the UI already renders them, so they are intentionally kept.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ExecutionStatus { Running, Idle, Completed, Unknown }
+pub enum ExecutionStatus {
+    Running,
+    Idle,
+    Completed,
+    Unknown,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,12 +91,23 @@ mod tests {
     #[test]
     fn unavailable_metrics_remain_null_in_serialization() {
         let node = ExecutionNode {
-            id: "fixture-child".into(), parent_id: Some("fixture-root".into()), process_id: None,
-            label: "Fixture child".into(), tool: "Codex".into(), model: None,
-            status: ExecutionStatus::Unknown, started_at: None, tokens: None,
+            id: "fixture-child".into(),
+            parent_id: Some("fixture-root".into()),
+            process_id: None,
+            label: "Fixture child".into(),
+            tool: "Codex".into(),
+            model: None,
+            status: ExecutionStatus::Unknown,
+            started_at: None,
+            tokens: None,
             relationship: Reliability::Inferred,
-            model_reliability: Reliability::Unavailable, tokens_in: None, tokens_out: None,
-            usage_reliability: Reliability::Unavailable, usage_source: None, detail: UsageDetail::default(), last_activity_at: None,
+            model_reliability: Reliability::Unavailable,
+            tokens_in: None,
+            tokens_out: None,
+            usage_reliability: Reliability::Unavailable,
+            usage_source: None,
+            detail: UsageDetail::default(),
+            last_activity_at: None,
         };
         let value = serde_json::to_value(node).expect("serialize fixture");
         assert!(value["tokens"].is_null());

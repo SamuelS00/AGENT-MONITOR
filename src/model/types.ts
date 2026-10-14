@@ -11,8 +11,16 @@ export type AgentStatus = "running" | "waiting" | "completed" | "failed" | "disc
 export type AgentRole = "orchestrator" | "agent" | "subagent";
 export type EventKind = "start" | "tool" | "spawn" | "wait" | "resume" | "complete" | "error" | "disconnect";
 
-export interface WaitSpan { start: number; end?: number; reason: string }
-export interface AgentEvent { at: number; kind: EventKind; summary: string }
+export interface WaitSpan {
+  start: number;
+  end?: number;
+  reason: string;
+}
+export interface AgentEvent {
+  at: number;
+  kind: EventKind;
+  summary: string;
+}
 
 export interface AgentNode {
   id: string;
@@ -46,8 +54,17 @@ export interface AgentNode {
   source: string;
 }
 
-export interface Project { id: string; name: string; path?: string }
-export interface Session { id: string; projectId: string; title: string; rootId: string }
+export interface Project {
+  id: string;
+  name: string;
+  path?: string;
+}
+export interface Session {
+  id: string;
+  projectId: string;
+  title: string;
+  rootId: string;
+}
 
 export interface HistorySession {
   id: string;

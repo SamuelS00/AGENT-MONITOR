@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -7,5 +8,9 @@ export default defineConfig({
   resolve: { dedupe: ["react", "react-dom"] },
   optimizeDeps: { include: ["@xyflow/react"] },
   server: { port: 1420, strictPort: true },
-  envPrefix: ["VITE_", "TAURI_"]
+  envPrefix: ["VITE_", "TAURI_"],
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test-setup.ts"],
+  },
 });

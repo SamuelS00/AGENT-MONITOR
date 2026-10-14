@@ -17,14 +17,11 @@ export function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2).replace(/0$/, "")}M`;
 }
 
-export const fmtClock = (ts: number) =>
-  new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+export const fmtClock = (ts: number) => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-export const fmtShortClock = (ts: number) =>
-  new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+export const fmtShortClock = (ts: number) => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
-export const fmtDate = (ts: number) =>
-  new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+export const fmtDate = (ts: number) => new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 
 export function fmtAgo(ts: number, now: number): string {
   const s = Math.max(0, Math.floor((now - ts) / 1000));
@@ -37,6 +34,6 @@ export function fmtAgo(ts: number, now: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export const confirmed = <T,>(value: T, source?: string): Metric<T> => ({ value, reliability: "confirmed", source });
-export const estimated = <T,>(value: T, source?: string): Metric<T> => ({ value, reliability: "inferred", source });
-export const unavailable = <T,>(source?: string): Metric<T> => ({ reliability: "unavailable", source });
+export const confirmed = <T>(value: T, source?: string): Metric<T> => ({ value, reliability: "confirmed", source });
+export const estimated = <T>(value: T, source?: string): Metric<T> => ({ value, reliability: "inferred", source });
+export const unavailable = <T>(source?: string): Metric<T> => ({ reliability: "unavailable", source });

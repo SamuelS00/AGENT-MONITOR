@@ -1,0 +1,3 @@
+# rustfmt settings applied by `cargo fmt` and verified by CI.
+edition = "2021"
+max_width = 120
