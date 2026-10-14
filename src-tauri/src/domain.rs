@@ -16,7 +16,10 @@ pub enum Reliability {
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionStatus {
     Running,
+    /// A live process, or a live host, with no recent activity.
     Idle,
+    /// No live process observed and nothing written recently. Says nothing about how the session ended.
+    Inactive,
     Completed,
     Unknown,
 }

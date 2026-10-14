@@ -32,6 +32,10 @@ pub struct SessionUsage {
     pub started_at: Option<String>,
     pub last_event_at: Option<String>,
     pub session_id: Option<String>,
+    /// Session that delegated to this one, exactly as the tool recorded it (Codex `parent_thread_id`).
+    pub parent_session_id: Option<String>,
+    /// Kind of subagent as the tool names it (a Codex role or subagent source); never derived from content.
+    pub agent_kind: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +139,46 @@ pub fn codex_recent_rollouts(window: std::time::Duration) -> Vec<CodexRollout> {
         .collect()
 }
 
+/// A subagent transcript Claude Code wrote next to its parent session.
+pub struct ClaudeSubagent {
+    pub file: TranscriptFile,
+    pub agent_id: String,
+    /// Subagent type (`general-purpose`, `Explore`, ...). The task description is deliberately not read: it is
+    /// derived from the prompt.
+    pub agent_type: Option<String>,
+    /// 1 when the main session spawned it; deeper when another subagent did.
+    pub depth: u64,
+}
+
+/// Subagents of a Claude Code session: `<project>/<session id>/subagents/agent-<id>.jsonl`, each with a
+/// `.meta.json` sidecar. The directory is written by Claude Code itself, so membership is confirmed.
+pub fn claude_subagents(session: &Path) -> Vec<ClaudeSubagent> {
+    let dir = session.with_extension("").join("subagents");
+    let mut out: Vec<ClaudeSubagent> = jsonl_files(&dir)
+        .into_iter()
+        .filter_map(|file| {
+            let agent_id = file
+                .path
+                .file_stem()?
+                .to_string_lossy()
+                .strip_prefix("agent-")?
+                .to_owned();
+            let meta: Option<Value> = fs::read_to_string(file.path.with_extension("meta.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok());
+            let field = |key: &str| meta.as_ref().and_then(|m| m.get(key));
+            Some(ClaudeSubagent {
+                agent_type: field("agentType").and_then(Value::as_str).map(str::to_owned),
+                depth: field("spawnDepth").and_then(Value::as_u64).unwrap_or(1),
+                agent_id,
+                file,
+            })
+        })
+        .collect();
+    out.sort_by_key(|sub| sub.file.modified);
+    out
+}
+
 /// A Claude Code transcript by session id, wherever its project folder is. Used when the command line names the
 /// session (`--resume <id>`), which identifies it without relying on the process working directory.
 pub fn claude_transcript_by_id(id: &str) -> Option<TranscriptFile> {
@@ -230,6 +274,19 @@ pub fn parse_claude(file: &TranscriptFile) -> Option<SessionUsage> {
     Some(usage)
 }
 
+/// How Codex labels a subagent session: its role, else the subagent source (`{"subagent":{"other":"guardian"}}`).
+fn codex_agent_kind(session_meta: &Value) -> Option<String> {
+    let text = |pointer: &str| session_meta.pointer(pointer).and_then(Value::as_str).map(str::to_owned);
+    text("/payload/agent_role").or_else(|| {
+        let subagent = session_meta.pointer("/payload/source/subagent")?;
+        subagent
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| subagent.get("other").and_then(Value::as_str).map(str::to_owned))
+            .or_else(|| subagent.as_object().and_then(|o| o.keys().next().cloned()))
+    })
+}
+
 pub fn parse_codex(file: &TranscriptFile) -> Option<SessionUsage> {
     if file.len > MAX_TRANSCRIPT_BYTES {
         return None;
@@ -251,6 +308,11 @@ pub fn parse_codex(file: &TranscriptFile) -> Option<SessionUsage> {
         match v.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 usage.session_id = v.pointer("/payload/id").and_then(Value::as_str).map(str::to_owned);
+                usage.parent_session_id = v
+                    .pointer("/payload/parent_thread_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                usage.agent_kind = codex_agent_kind(&v);
                 usage.provider = v
                     .pointer("/payload/model_provider")
                     .and_then(Value::as_str)
@@ -301,6 +363,8 @@ pub fn opencode_db_path() -> Option<PathBuf> {
 pub struct OpencodeSession {
     pub id: String,
     pub directory: String,
+    /// Delegating session, as recorded in the `parent_id` column. `None` for root sessions.
+    pub parent_id: Option<String>,
     pub updated_ms: u64,
     pub usage: SessionUsage,
 }
@@ -308,44 +372,60 @@ pub struct OpencodeSession {
 /// Read-only: the database is opened with `SQLITE_OPEN_READ_ONLY`; only the model name, token counters and
 /// timestamps are selected, never message or part content.
 pub fn opencode_sessions(db: &Path, cwd: &Path, updated_since_ms: u64) -> Vec<OpencodeSession> {
-    opencode_query(db, Some(cwd), updated_since_ms)
+    opencode_query(db, Some(cwd), updated_since_ms, false)
 }
 
-/// Root sessions of every directory updated since `updated_since_ms`. An `opencode serve` process hosts sessions
-/// of many projects, so its own working directory cannot be used to find them.
+/// Sessions of every directory updated since `updated_since_ms`, subagent sessions included. An `opencode serve`
+/// process hosts sessions of many projects, so its own working directory cannot be used to find them.
 pub fn opencode_recent_sessions(db: &Path, updated_since_ms: u64) -> Vec<OpencodeSession> {
-    opencode_query(db, None, updated_since_ms)
+    opencode_query(db, None, updated_since_ms, true)
 }
 
-fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64) -> Vec<OpencodeSession> {
+fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_children: bool) -> Vec<OpencodeSession> {
     use rusqlite::{Connection, OpenFlags};
     let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
     else {
         return Vec::new();
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT s.id, s.directory, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
+    // Older databases have no `agent` column; the agent name is optional.
+    let has_agent = conn
+        .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'agent'")
+        .and_then(|mut q| q.exists([]))
+        .unwrap_or(false);
+    let agent_column = if has_agent { "s.agent" } else { "NULL" };
+    let sql = format!(
+        "SELECT s.id, s.directory, s.parent_id, s.time_created, s.time_updated, s.model, s.tokens_input, s.tokens_output, s.tokens_reasoning,
                 s.tokens_cache_read, s.tokens_cache_write, s.cost,
                 (SELECT json_extract(m.data, '$.modelID') || char(31) || coalesce(json_extract(m.data, '$.providerID'), '') FROM message m
                   WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
-                  ORDER BY m.time_created DESC LIMIT 1)
+                  ORDER BY m.time_created DESC LIMIT 1),
+                {agent_column}
          FROM session s
-         WHERE (?1 IS NULL OR s.directory = ?1) AND s.parent_id IS NULL AND s.time_updated >= ?2
-         ORDER BY s.time_updated DESC",
-    ) else { return Vec::new() };
+         WHERE (?1 IS NULL OR s.directory = ?1) AND (?3 OR s.parent_id IS NULL) AND s.time_updated >= ?2
+         ORDER BY s.time_updated DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
+    };
     let rows = stmt.query_map(
-        rusqlite::params![cwd.map(|c| c.to_string_lossy().into_owned()), updated_since_ms as i64],
+        rusqlite::params![
+            cwd.map(|c| c.to_string_lossy().into_owned()),
+            updated_since_ms as i64,
+            with_children
+        ],
         |row| {
             let id: String = row.get(0)?;
             let directory: String = row.get(1)?;
-            let created: i64 = row.get(2)?;
-            let updated: i64 = row.get(3)?;
-            let model_json: Option<String> = row.get(4)?;
+            let parent_id: Option<String> = row.get(2)?;
+            let created: i64 = row.get(3)?;
+            let updated: i64 = row.get(4)?;
+            let model_json: Option<String> = row.get(5)?;
             let n = |i: usize| row.get::<_, i64>(i).map(|v| v.max(0) as u64);
-            let (input, output, reasoning, cache_read, cache_write) = (n(5)?, n(6)?, n(7)?, n(8)?, n(9)?);
-            let cost: Option<f64> = row.get(10)?;
-            let last: Option<String> = row.get(11)?;
+            let (input, output, reasoning, cache_read, cache_write) = (n(6)?, n(7)?, n(8)?, n(9)?, n(10)?);
+            let cost: Option<f64> = row.get(11)?;
+            let last: Option<String> = row.get(12)?;
+            let agent: Option<String> = row.get(13)?;
             let (last_model, last_provider) = match last.as_deref().and_then(|l| l.split_once('\u{1f}')) {
                 Some((m, p)) => (Some(m.to_owned()), Some(p.to_owned()).filter(|p| !p.is_empty())),
                 None => (None, None),
@@ -366,6 +446,7 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64) -> Vec<O
             Ok(OpencodeSession {
                 id: id.clone(),
                 directory,
+                parent_id: parent_id.clone(),
                 updated_ms: updated.max(0) as u64,
                 usage: SessionUsage {
                     model,
@@ -381,6 +462,8 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64) -> Vec<O
                     cost_usd: cost.filter(|_| any_tokens),
                     started_at: iso(created),
                     last_event_at: iso(updated),
+                    parent_session_id: parent_id.clone(),
+                    agent_kind: agent.filter(|a| parent_id.is_some() && !a.is_empty()),
                     session_id: Some(id),
                 },
             })
@@ -444,7 +527,10 @@ mod tests {
         let all = opencode_recent_sessions(&path, 0);
         let mut dirs: Vec<_> = all.iter().map(|s| (s.id.as_str(), s.directory.as_str())).collect();
         dirs.sort();
-        assert_eq!(dirs, [("a", "/x"), ("empty", "/x"), ("other", "/y")]);
+        assert_eq!(dirs, [("a", "/x"), ("empty", "/x"), ("other", "/y"), ("sub", "/x")]);
+        let sub = all.iter().find(|s| s.id == "sub").unwrap();
+        assert_eq!(sub.parent_id.as_deref(), Some("a"));
+        assert!(all.iter().find(|s| s.id == "a").unwrap().parent_id.is_none());
         let _ = fs::remove_file(&path);
     }
 
@@ -578,5 +664,46 @@ mod tests {
         fs::write(&path, "not a database").unwrap();
         assert!(opencode_sessions(&path, Path::new("/x"), 0).is_empty());
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_records_the_delegating_session_and_agent_kind() {
+        let body = "{\"timestamp\":\"t0\",\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"parent_thread_id\":\"parent\",\"cwd\":\"/x\",\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}\n";
+        let u = parse_codex(&temp("codex-child", body)).unwrap();
+        assert_eq!(u.session_id.as_deref(), Some("child"));
+        assert_eq!(u.parent_session_id.as_deref(), Some("parent"));
+        assert_eq!(u.agent_kind.as_deref(), Some("guardian"));
+        let root =
+            "{\"timestamp\":\"t0\",\"type\":\"session_meta\",\"payload\":{\"id\":\"root\",\"source\":\"vscode\"}}\n";
+        let u = parse_codex(&temp("codex-root", root)).unwrap();
+        assert_eq!((u.parent_session_id, u.agent_kind), (None, None));
+    }
+
+    #[test]
+    fn claude_subagents_come_from_the_session_subagents_folder() {
+        let base = std::env::temp_dir().join(format!("agent-monitor-{}-subagents", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("proj").join("sess").join("subagents");
+        fs::create_dir_all(&dir).unwrap();
+        let session = base.join("proj").join("sess.jsonl");
+        fs::write(&session, "{}").unwrap();
+        fs::write(dir.join("agent-a1.jsonl"), "{}").unwrap();
+        fs::write(
+            dir.join("agent-a1.meta.json"),
+            "{\"agentType\":\"Explore\",\"description\":\"SECRET TASK\",\"spawnDepth\":2}",
+        )
+        .unwrap();
+        fs::write(dir.join("agent-a2.jsonl"), "{}").unwrap(); // no sidecar
+        fs::write(dir.join("notes.jsonl"), "{}").unwrap(); // not an agent file
+        let mut subs = claude_subagents(&session);
+        subs.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        assert_eq!(
+            subs.iter().map(|s| s.agent_id.as_str()).collect::<Vec<_>>(),
+            ["a1", "a2"]
+        );
+        assert_eq!((subs[0].agent_type.as_deref(), subs[0].depth), (Some("Explore"), 2));
+        assert_eq!((subs[1].agent_type.as_deref(), subs[1].depth), (None, 1));
+        assert!(claude_subagents(&base.join("proj").join("none.jsonl")).is_empty());
+        let _ = fs::remove_dir_all(&base);
     }
 }

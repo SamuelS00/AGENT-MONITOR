@@ -147,12 +147,12 @@ fn age_of(modified: SystemTime) -> Option<Duration> {
 }
 
 /// Status for a session that no process owns, from its last write and whether its host is alive.
-/// Never `Completed`: a quiet file does not prove the session ended.
+/// Never `Completed`: a quiet file does not prove the session ended, so it is `Inactive`.
 fn passive_status(modified: SystemTime, host_alive: bool) -> ExecutionStatus {
     match age_of(modified) {
         Some(age) if age <= IDLE_AFTER => ExecutionStatus::Running,
         Some(age) if age <= ACTIVE_WINDOW && host_alive => ExecutionStatus::Idle,
-        _ => ExecutionStatus::Unknown,
+        _ => ExecutionStatus::Inactive,
     }
 }
 
@@ -169,8 +169,9 @@ type TranscriptAdapter = (
     fn(&TranscriptFile) -> Option<SessionUsage>,
     &'static str,
 );
-/// Usage linked to a process: the parsed data, its reliability, a human-readable source and the session mtime.
-type LinkedUsage = (SessionUsage, Reliability, String, SystemTime);
+/// Usage linked to a process: the parsed data, its reliability, a human-readable source, the session mtime and,
+/// for transcript files, the file (used to find the subagents written beside it).
+type LinkedUsage = (SessionUsage, Reliability, String, SystemTime, Option<PathBuf>);
 
 impl Collector {
     pub fn collect(&self) -> MonitorSnapshot {
@@ -203,6 +204,9 @@ impl Collector {
 
         let mut processes = Vec::new();
         let mut executions = Vec::new();
+        // Session id (as the tool records it) -> node id, to attach delegated sessions to their parent.
+        let mut node_of_session: HashMap<String, String> = HashMap::new();
+        let mut parent_of: Vec<(String, String)> = Vec::new();
         for item in &seen {
             let process_id = format!("process:{}:{}", item.pid, item.start);
             let started_at = DateTime::from_timestamp(item.start as i64, 0)
@@ -240,14 +244,22 @@ impl Collector {
             node.status = ExecutionStatus::Running;
             node.started_at = Some(started_at);
             node.relationship = Reliability::Confirmed;
-            if let Some((usage, reliability, source, modified)) = linked {
+            let mut subagents = Vec::new();
+            if let Some((usage, reliability, source, modified, file)) = linked {
                 apply_usage(&mut node, &usage, reliability, source);
                 node.last_activity_at = Some(DateTime::<Utc>::from(modified).to_rfc3339());
                 if age_of(modified).is_some_and(|age| age > IDLE_AFTER) {
                     node.status = ExecutionStatus::Idle;
                 }
+                if let Some(id) = usage.session_id.clone() {
+                    node_of_session.insert(id, node.id.clone());
+                }
+                if item.tool == "Claude Code" {
+                    subagents = file.map(|f| self.claude_subagent_nodes(&f, &node)).unwrap_or_default();
+                }
             }
             executions.push(node);
+            executions.extend(subagents);
         }
 
         // Sessions no process claimed: the desktop apps host many sessions behind one server process, so the
@@ -275,7 +287,14 @@ impl Collector {
             if let Some(usage) = self.cached(path, rollout.file.modified, rollout.file.len, adapters::parse_codex) {
                 apply_usage(&mut node, &usage, Reliability::Confirmed, "Codex rollout file".into());
                 node.started_at = usage.started_at.clone().or(node.started_at);
-                node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
+                node.last_activity_at = usage.last_event_at.clone().or(node.last_activity_at);
+                if let Some(id) = usage.session_id.clone() {
+                    node_of_session.insert(id, node.id.clone());
+                }
+                if let Some(parent) = usage.parent_session_id.clone() {
+                    node.label = usage.agent_kind.clone().unwrap_or_else(|| "Subagent".into());
+                    parent_of.push((node.id.clone(), parent));
+                }
             }
             passive.push(node);
         }
@@ -287,14 +306,21 @@ impl Collector {
             for session in adapters::opencode_recent_sessions(&db, since_ms)
                 .into_iter()
                 .filter(|s| !claimed.contains(&PathBuf::from(format!("opencode:{}", s.id))))
-                .take(MAX_PASSIVE_SESSIONS)
+                .take(MAX_PASSIVE_SESSIONS * 3)
             {
                 let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(session.updated_ms);
                 let mut node = ExecutionNode::new(
                     format!("opencode-session:{}", session.id),
-                    dir_label(&session.directory, "OpenCode session"),
+                    match &session.parent_id {
+                        Some(_) => session.usage.agent_kind.clone().unwrap_or_else(|| "Subagent".into()),
+                        None => dir_label(&session.directory, "OpenCode session"),
+                    },
                     "OpenCode",
                 );
+                node_of_session.insert(session.id.clone(), node.id.clone());
+                if let Some(parent) = &session.parent_id {
+                    parent_of.push((node.id.clone(), parent.clone()));
+                }
                 node.project_path = Some(session.directory.clone()).filter(|d| is_project_dir(Path::new(d)));
                 node.status = passive_status(modified, host_alive("OpenCode"));
                 node.started_at = session.usage.started_at.clone();
@@ -310,12 +336,64 @@ impl Collector {
         }
         executions.extend(passive);
 
+        // A delegation is recorded only when the tool named the parent session and that session is in this
+        // snapshot. Process ancestry is never used. A subagent whose parent is out of the window stays a root.
+        for (child, parent_session) in parent_of {
+            let Some(parent) = node_of_session.get(&parent_session).filter(|parent| **parent != child) else {
+                continue;
+            };
+            if let Some(node) = executions.iter_mut().find(|node| node.id == child) {
+                node.parent_id = Some(parent.clone());
+                node.relationship = Reliability::Confirmed;
+            }
+        }
+
         MonitorSnapshot {
             observed_at,
             processes,
             executions,
             collector_error: None,
         }
+    }
+
+    /// Subagents Claude Code wrote beside `session`, as children of the node that owns that session. Their
+    /// usage is read from their own transcripts; a subagent of a subagent hangs under the main session with an
+    /// inferred relationship because the parent subagent is not recorded.
+    fn claude_subagent_nodes(&self, session: &Path, parent: &ExecutionNode) -> Vec<ExecutionNode> {
+        adapters::claude_subagents(session)
+            .into_iter()
+            .filter(|sub| age_of(sub.file.modified).is_some_and(|age| age <= SESSION_WINDOW))
+            .take(MAX_PASSIVE_SESSIONS * 2)
+            .map(|sub| {
+                let label = sub.agent_type.clone().unwrap_or_else(|| "Subagent".into());
+                let mut node =
+                    ExecutionNode::new(format!("{}:subagent:{}", parent.id, sub.agent_id), label, "Claude Code");
+                node.parent_id = Some(parent.id.clone());
+                node.process_id = None;
+                node.project_path = parent.project_path.clone();
+                node.relationship = if sub.depth <= 1 {
+                    Reliability::Confirmed
+                } else {
+                    Reliability::Inferred
+                };
+                node.status = passive_status(sub.file.modified, true);
+                node.started_at = Some(DateTime::<Utc>::from(sub.file.modified).to_rfc3339());
+                node.last_activity_at = node.started_at.clone();
+                if let Some(usage) =
+                    self.cached(&sub.file.path, sub.file.modified, sub.file.len, adapters::parse_claude)
+                {
+                    apply_usage(
+                        &mut node,
+                        &usage,
+                        Reliability::Confirmed,
+                        "Claude Code subagent transcript".into(),
+                    );
+                    node.started_at = usage.started_at.clone().or(node.started_at);
+                    node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
+                }
+                node
+            })
+            .collect()
     }
 
     fn cached(
@@ -374,15 +452,20 @@ impl Collector {
                     Reliability::Confirmed,
                     format!("{source} (session id in command)"),
                     file.modified,
+                    Some(file.path),
                 ));
             }
         }
         let floor = SystemTime::UNIX_EPOCH + Duration::from_secs(item.start.saturating_sub(START_SLACK.as_secs()));
-        let file = candidates
+        // A process owns its own session, never a subagent session that happens to share the directory.
+        let (file, usage) = candidates
             .into_iter()
-            .find(|f| f.modified >= floor && !claimed.contains(&f.path))?;
+            .filter(|f| f.modified >= floor && !claimed.contains(&f.path))
+            .find_map(|f| {
+                let usage = self.cached(&f.path, f.modified, f.len, parse)?;
+                usage.parent_session_id.is_none().then_some((f, usage))
+            })?;
         claimed.push(file.path.clone());
-        let usage = self.cached(&file.path, file.modified, file.len, parse)?;
         let named = usage
             .session_id
             .as_deref()
@@ -392,7 +475,13 @@ impl Collector {
         } else {
             (Reliability::Inferred, "matched by working directory")
         };
-        Some((usage, reliability, format!("{source} ({how})"), file.modified))
+        Some((
+            usage,
+            reliability,
+            format!("{source} ({how})"),
+            file.modified,
+            Some(file.path),
+        ))
     }
 
     /// OpenCode stores sessions in SQLite. The pairing rules match the transcript adapters: same working
@@ -416,6 +505,7 @@ impl Collector {
             reliability,
             format!("OpenCode database ({how})"),
             modified,
+            None,
         ))
     }
 }
@@ -571,8 +661,8 @@ mod tests {
         let ago = |secs| SystemTime::now() - Duration::from_secs(secs);
         assert!(matches!(passive_status(ago(10), false), ExecutionStatus::Running));
         assert!(matches!(passive_status(ago(600), true), ExecutionStatus::Idle));
-        assert!(matches!(passive_status(ago(600), false), ExecutionStatus::Unknown));
-        assert!(matches!(passive_status(ago(86_400), true), ExecutionStatus::Unknown));
+        assert!(matches!(passive_status(ago(600), false), ExecutionStatus::Inactive));
+        assert!(matches!(passive_status(ago(86_400), true), ExecutionStatus::Inactive));
     }
 
     /// Manual smoke test against this machine: `cargo test live_snapshot -- --ignored --nocapture`.
@@ -588,11 +678,12 @@ mod tests {
         }
         for e in &snapshot.executions {
             println!(
-                "{:<12} {:?} proj={:?} {:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
+                "{:<12} {:?} proj={:?} {:?} parent={:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
                 e.tool,
                 e.role,
                 e.project_path,
                 e.status,
+                e.parent_id.is_some(),
                 e.label,
                 e.model,
                 e.model_reliability,
