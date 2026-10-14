@@ -38,9 +38,10 @@ function tickLabel(t: number, step: number, spanMs: number) {
 }
 
 export function Timeline() {
-  const { index, data, sessionId, expanded, toggle, selectedId, select, now } = useStore();
+  const { index, data, sessionId, expanded, toggle, selectedId, select, now: wallClock } = useStore();
   const [range, setRange] = useState<Range>("fit");
-  const rootId = data.sessions.find((s) => s.id === sessionId)?.rootId;
+  const current = data.sessions.find((s) => s.id === sessionId);
+  const rootId = current?.rootId;
   const rows = useMemo(() => (rootId ? visibleRows(index, rootId, expanded) : []), [index, rootId, expanded]);
   const all = useMemo(() => (rootId ? [index.byId.get(rootId)!, ...descendants(index, rootId)] : []), [index, rootId]);
 
@@ -54,13 +55,32 @@ export function Timeline() {
       </div>
     );
 
+  if (current?.projectId === "services")
+    return (
+      <div className="view">
+        <ExplorerBar withModes={false} />
+        <EmptyState title="A background service has no timeline">
+          It only hosts sessions, so there is no work of its own to chart. Pick a session from the list above.
+        </EmptyState>
+      </div>
+    );
+
+  // The chart's clock is the last observation, not the wall clock: it moves when the collector refreshes and stands
+  // still when nothing is running. Tying the axis to a ticking clock rescaled every bar once per second.
+  const live = all.some((n) => isLive(n.status));
+  const observed = data.observedAt > 0 ? data.observedAt : wallClock;
+  const settled = Math.max(...all.map((n) => endOf(n, observed) ?? n.startedAt ?? 0), 0);
+  const now = live ? Math.max(observed, settled) : settled;
+
   const starts = all.map((n) => n.startedAt).filter((v): v is number => v !== undefined);
   const first = starts.length ? Math.min(...starts) : now - 15 * 60_000;
   const span = range === "fit" ? Math.max(60_000, now - first) : range === "15m" ? 15 * 60_000 : 60 * 60_000;
   const t0 = range === "fit" ? first - span * 0.02 : now - span;
   const t1 = now + span * 0.04;
   const pct = (t: number) => ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * 100;
-  const step = STEPS.find((s) => (t1 - t0) / s <= MAX_TICKS) ?? STEPS[STEPS.length - 1];
+  // Date-and-time labels are wide: fewer ticks once the range passes a day, or they overlap.
+  const maxTicks = t1 - t0 > 24 * HOUR * 1000 ? 5 : MAX_TICKS;
+  const step = STEPS.find((s) => (t1 - t0) / s <= maxTicks) ?? STEPS[STEPS.length - 1];
   const ticks: number[] = [];
   // Align to local clock boundaries (not UTC) so "06:00" lands on 06:00 for the viewer.
   const tz = -new Date(t0).getTimezoneOffset() * 60_000;
@@ -211,9 +231,11 @@ export function Timeline() {
               </div>
             );
           })}
-          <div className="tl-now" style={{ ["--p" as string]: pct(now) / 100 }} aria-hidden>
-            <span>now</span>
-          </div>
+          {live && (
+            <div className="tl-now" style={{ ["--p" as string]: pct(now) / 100 }} aria-hidden>
+              <span>now</span>
+            </div>
+          )}
         </div>
       </div>
       <div className="statusbar">

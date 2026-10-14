@@ -94,7 +94,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (sessionId && data.sessions.some((s) => s.id === sessionId)) return;
-    setSessionId((data.sessions.find((s) => index.byId.get(s.rootId)?.status === "running") ?? data.sessions[0])?.id);
+    // Services host sessions but have no work of their own, so they are never the default.
+    const work = data.sessions.filter((s) => s.projectId !== "services");
+    setSessionId((work.find((s) => index.byId.get(s.rootId)?.status === "running") ?? work[0] ?? data.sessions[0])?.id);
   }, [data, index, sessionId]);
 
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);

@@ -168,6 +168,25 @@ describe("App (navigation)", () => {
     expect(within(row).getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("never opens a background service as the default session or charts one", async () => {
+    const service: ExecutionNode = {
+      ...fixtureExecution,
+      id: "fixture-execution:service",
+      processId: undefined,
+      role: "service",
+      label: "Fixture server",
+    };
+    // The service comes first, as it does in a real snapshot.
+    loadMock.mockResolvedValue({ ...fixtureSnapshot, executions: [service, fixtureExecution] });
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+
+    fireEvent.click(views().getByRole("button", { name: /Timeline/ }));
+    await screen.findByRole("heading", { level: 1, name: "Timeline" });
+    expect(await screen.findByRole("button", { name: /Fixture agent run/ })).toBeInTheDocument();
+    expect(screen.queryByText("A background service has no timeline")).not.toBeInTheDocument();
+  });
+
   it("numbers the shortcuts by what is visible", async () => {
     loadMock.mockResolvedValue(fixtureSnapshot);
     render(<App />);

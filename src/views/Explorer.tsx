@@ -25,14 +25,16 @@ export function SessionPicker() {
         onClick={(e) =>
           menu.openAt(
             e.currentTarget,
-            data.sessions.map((s) => ({
-              label: `${data.projects.find((p) => p.id === s.projectId)?.name ?? "unknown"} · ${s.title}`,
-              checked: s.id === sessionId,
-              onSelect: () => {
-                setSessionId(s.id);
-                select(s.rootId);
-              },
-            })),
+            data.sessions
+              .filter((s) => s.projectId !== "services" || s.id === sessionId)
+              .map((s) => ({
+                label: `${data.projects.find((p) => p.id === s.projectId)?.name ?? "unknown"} · ${s.title}`,
+                checked: s.id === sessionId,
+                onSelect: () => {
+                  setSessionId(s.id);
+                  select(s.rootId);
+                },
+              })),
           )
         }
         aria-haspopup="menu"
