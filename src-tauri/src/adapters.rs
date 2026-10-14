@@ -143,6 +143,49 @@ pub fn codex_recent_rollouts(window: std::time::Duration) -> Vec<CodexRollout> {
         .collect()
 }
 
+/// A Claude Code session transcript and the working directory it recorded.
+pub struct ClaudeSession {
+    pub file: TranscriptFile,
+    pub cwd: Option<String>,
+}
+
+/// Session transcripts written since `cutoff` under `<root>/<project>/<session>.jsonl`, newest first. The project
+/// folder name is a lossy encoding of the path, so the working directory is read from the transcript itself.
+fn claude_sessions_under(root: &Path, cutoff: SystemTime) -> Vec<ClaudeSession> {
+    let mut out: Vec<ClaudeSession> = read_dirs(root)
+        .iter()
+        .flat_map(|dir| jsonl_files(dir))
+        .filter(|file| file.modified >= cutoff)
+        .map(|file| ClaudeSession {
+            cwd: claude_cwd(&file.path),
+            file,
+        })
+        .collect();
+    out.sort_by_key(|session| std::cmp::Reverse(session.file.modified));
+    out
+}
+
+/// Claude Code sessions written within `window`, whether or not a process still owns them.
+pub fn claude_recent_sessions(window: std::time::Duration) -> Vec<ClaudeSession> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    claude_sessions_under(&home.join(".claude").join("projects"), SystemTime::now() - window)
+}
+
+/// The `cwd` of the first line that records one. Only that field is read; message content is ignored.
+fn claude_cwd(path: &Path) -> Option<String> {
+    BufReader::new(File::open(path).ok()?)
+        .lines()
+        .map_while(Result::ok)
+        .take(200)
+        .filter(|line| line.contains("\"cwd\""))
+        .find_map(|line| {
+            let v: Value = serde_json::from_str(&line).ok()?;
+            v.get("cwd").and_then(Value::as_str).map(str::to_owned)
+        })
+}
+
 /// A subagent transcript Claude Code wrote next to its parent session.
 pub struct ClaudeSubagent {
     pub file: TranscriptFile,
@@ -875,5 +918,34 @@ mod tests {
             "raw here; the collector filters placeholders"
         );
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn claude_sessions_come_with_their_own_working_directory() {
+        let root = std::env::temp_dir().join(format!("agent-monitor-{}-claude-root", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let proj = root.join("-Users-a-work-app");
+        fs::create_dir_all(proj.join("s1").join("subagents")).unwrap();
+        fs::write(
+            proj.join("s1.jsonl"),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"/Users/a/work-app\",\"message\":\"SECRET\"}\n",
+        )
+        .unwrap();
+        fs::write(proj.join("s2.jsonl"), "{\"type\":\"user\"}\n").unwrap(); // no cwd recorded
+        fs::write(proj.join("notes.txt"), "x").unwrap();
+        let mut found = claude_sessions_under(&root, SystemTime::now() - std::time::Duration::from_secs(60));
+        found.sort_by(|a, b| a.file.path.cmp(&b.file.path));
+        assert_eq!(
+            found.len(),
+            2,
+            "only transcripts, not other files or the subagents folder"
+        );
+        assert_eq!(found[0].cwd.as_deref(), Some("/Users/a/work-app"));
+        assert_eq!(
+            found[1].cwd, None,
+            "a missing cwd stays unknown rather than being decoded from the folder name"
+        );
+        assert!(claude_sessions_under(&root, SystemTime::now() + std::time::Duration::from_secs(60)).is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 }

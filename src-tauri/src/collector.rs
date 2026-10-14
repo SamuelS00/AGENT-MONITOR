@@ -456,6 +456,40 @@ impl Collector {
             }
             passive.push(node);
         }
+        // Claude Code sessions with no process (finished, or run by a host that has since closed): listed from their
+        // transcripts as workers, with the subagents written beside them. A process-owned session is never repeated.
+        for session in adapters::claude_recent_sessions(SESSION_WINDOW)
+            .into_iter()
+            .filter(|s| !claimed.contains(&s.file.path))
+            .take(MAX_PASSIVE_SESSIONS)
+        {
+            let path = &session.file.path;
+            let short = path
+                .file_stem()
+                .map_or_else(String::new, |s| short_id(&s.to_string_lossy()).to_owned());
+            let mut node = ExecutionNode::new(
+                format!("claude-session:{}", path.display()),
+                format!("Worker {short}"),
+                "Claude Code",
+            );
+            node.project_path = session.cwd.filter(|cwd| is_project_dir(Path::new(cwd)));
+            node.status = passive_status(session.file.modified, host_alive("Claude Code"));
+            node.started_at = Some(DateTime::<Utc>::from(session.file.modified).to_rfc3339());
+            node.last_activity_at = node.started_at.clone();
+            if let Some(usage) = self.cached(path, session.file.modified, session.file.len, adapters::parse_claude) {
+                apply_usage(
+                    &mut node,
+                    &usage,
+                    Reliability::Confirmed,
+                    "Claude Code transcript".into(),
+                );
+                node.started_at = usage.started_at.clone().or(node.started_at);
+                node.last_activity_at = usage.last_event_at.or(node.last_activity_at);
+            }
+            let subagents = self.claude_subagent_nodes(path, &node);
+            passive.push(node);
+            passive.extend(subagents);
+        }
         if let Some(db) = adapters::opencode_db_path() {
             let since_ms = SystemTime::now()
                 .checked_sub(SESSION_WINDOW)
