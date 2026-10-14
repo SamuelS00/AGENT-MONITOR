@@ -536,6 +536,21 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
 }
 
+/// True when `needle` occurs in the first `limit` bytes of the file. Orca puts the task and dispatch ids in the
+/// worker's opening prompt, so a transcript that opens with the dispatch id belongs to that worker. Nothing from
+/// the file is kept: the bytes are only searched.
+pub fn opens_with(path: &Path, needle: &str, limit: u64) -> bool {
+    use std::io::Read;
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    if file.take(limit).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    head.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
 /// Orca keeps its orchestration state (runs, tasks, worker dispatches) in a SQLite database of its own.
 pub fn orca_db_path() -> Option<PathBuf> {
     let path = dirs::data_dir()?.join("orca").join("orchestration.db");
@@ -557,6 +572,10 @@ pub struct OrcaDispatch {
     /// `pending`, `dispatched`, `completed`, `failed` or `circuit_broken`, as Orca records it.
     pub status: String,
     pub depth: u64,
+    /// Directory of the worktree the worker ran in (`worker_dispatches.worktree_id` after the `::`).
+    pub worktree_path: Option<String>,
+    /// Agent Orca launched (`claude`, `codex`, ...), as `launch.effective.agent` records it.
+    pub agent: Option<String>,
     /// Orca's own task title (`display_name`, else `task_title`). The task spec is never read.
     pub title: Option<String>,
     pub created_s: Option<i64>,
@@ -574,17 +593,32 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
         return Vec::new();
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
-    let Ok(mut stmt) = conn.prepare(
+    let has_workers = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'worker_dispatches'")
+        .and_then(|mut q| q.exists([]))
+        .unwrap_or(false);
+    let (worker_columns, worker_join) = if has_workers {
+        (
+            "w.worktree_id,
+                coalesce(json_extract(w.start_options, '$.launch.effective.agent'), json_extract(w.start_options, '$.agent'))",
+            "LEFT JOIN worker_dispatches w ON w.dispatch_id = d.id",
+        )
+    } else {
+        ("NULL, NULL", "")
+    };
+    let sql = format!(
         "SELECT d.id, d.run_id, d.task_id, d.creator_dispatch_id, d.creator_handle, d.assignee_handle, d.status, d.depth,
                 CAST(strftime('%s', d.created_at) AS INTEGER),
                 CAST(strftime('%s', d.completed_at) AS INTEGER),
                 CAST(strftime('%s', d.last_heartbeat_at) AS INTEGER),
                 coalesce(nullif(t.display_name, ''), nullif(t.task_title, '')),
-                t.parent_id
-         FROM dispatch_contexts d LEFT JOIN tasks t ON t.id = d.task_id
+                t.parent_id,
+                {worker_columns}
+         FROM dispatch_contexts d LEFT JOIN tasks t ON t.id = d.task_id {worker_join}
          WHERE d.status IN ('pending', 'dispatched') OR CAST(strftime('%s', d.created_at) AS INTEGER) >= ?1
-         ORDER BY d.created_at",
-    ) else {
+         ORDER BY d.created_at"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
     let rows = stmt.query_map([created_since_s], |row| {
@@ -604,6 +638,10 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
             heartbeat_s: row.get(10)?,
             title: row.get(11)?,
             parent_task_id: row.get(12)?,
+            worktree_path: row
+                .get::<_, Option<String>>(13)?
+                .and_then(|id| id.split_once("::").map(|(_, path)| path.to_owned())),
+            agent: row.get(14)?,
         })
     });
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
@@ -854,6 +892,9 @@ mod tests {
                 "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
                    assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
                  CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT, parent_id TEXT);
+                 CREATE TABLE worker_dispatches (dispatch_id TEXT, worktree_id TEXT, start_options TEXT);
+                 INSERT INTO worker_dispatches VALUES ('root', 'repo1::/Users/a/work/app', '{\"launch\":{\"effective\":{\"agent\":\"claude\"}}}'),
+                   ('kid', 'repo1::/Users/a/work/app', '{\"agent\":\"codex\"}');
                  INSERT INTO tasks VALUES ('t1', '', 'Map the repo', NULL), ('t2', 'Count tests', 'ignored when a display name exists', 't1');
                  INSERT INTO dispatch_contexts VALUES ('root', 'r', 't1', NULL, NULL, 'h1', 'dispatched', 1, '2026-10-14 10:00:00', NULL, '2026-10-14 10:05:00');
                  INSERT INTO dispatch_contexts VALUES ('kid', 'r', 't2', 'root', 'h1', 'h2', 'completed', 2, '2026-10-14 10:01:00', '2026-10-14 10:04:00', NULL);
@@ -878,6 +919,15 @@ mod tests {
         );
         assert_eq!(find("kid").depth, 2);
         assert_eq!(find("kid").parent_task_id.as_deref(), Some("t1"));
+        assert_eq!(find("root").worktree_path.as_deref(), Some("/Users/a/work/app"));
+        assert_eq!(
+            (find("root").agent.as_deref(), find("kid").agent.as_deref()),
+            (Some("claude"), Some("codex"))
+        );
+        assert_eq!(
+            (find("self").worktree_path.clone(), find("self").agent.clone()),
+            (None, None)
+        );
         assert_eq!(find("root").parent_task_id, None);
         assert_eq!(find("root").title.as_deref(), Some("Map the repo"));
         assert_eq!(find("kid").title.as_deref(), Some("Count tests"));
@@ -947,5 +997,21 @@ mod tests {
         );
         assert!(claude_sessions_under(&root, SystemTime::now() + std::time::Duration::from_secs(60)).is_empty());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_transcript_belongs_to_a_worker_only_when_it_opens_with_the_dispatch_id() {
+        let opening = temp("opens", "{\"msg\":\"preamble ctx_abc123 do the task\"}\n");
+        assert!(opens_with(&opening.path, "ctx_abc123", 4096));
+        assert!(!opens_with(&opening.path, "ctx_other", 4096));
+        // The coordinator's transcript mentions the id too, but only after a long unrelated prefix.
+        let later = temp("later", &format!("{}ctx_abc123\n", "x".repeat(8192)));
+        assert!(
+            !opens_with(&later.path, "ctx_abc123", 4096),
+            "an id past the opening bytes does not count"
+        );
+        assert!(!opens_with(Path::new("/definitely/missing.jsonl"), "ctx_abc123", 4096));
+        let _ = fs::remove_file(&opening.path);
+        let _ = fs::remove_file(&later.path);
     }
 }

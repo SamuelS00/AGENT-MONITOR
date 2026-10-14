@@ -1,4 +1,4 @@
-use crate::adapters::{self, OrcaDispatch, SessionUsage, TranscriptFile};
+use crate::adapters::{self, ClaudeSession, CodexRollout, OrcaDispatch, SessionUsage, TranscriptFile};
 use crate::domain::{
     clean_task, ExecutionNode, ExecutionRole, ExecutionStatus, MonitorSnapshot, ObservedProcess, Reliability,
     UsageDetail,
@@ -167,6 +167,62 @@ fn attach_parents(
 }
 
 const ORCA_SOURCE: &str = "Orca orchestration database";
+const ORCA_LINK_SOURCE: &str = "Orca dispatch id in the session's opening prompt";
+/// How far into a transcript the dispatch id is looked for. Orca writes it in the worker's first prompt.
+const ORCA_OPEN_BYTES: u64 = 256 * 1024;
+/// A transcript may start this long before Orca stamps the dispatch (clock and launch skew).
+const ORCA_START_SLACK_S: i64 = 120;
+
+/// The session transcript of one Orca worker, found by evidence and not by guesswork: same agent, same worktree,
+/// written since the dispatch started, and opening with the dispatch id Orca injected into the worker's prompt.
+struct WorkerSession {
+    path: PathBuf,
+    modified: SystemTime,
+    len: u64,
+    claude: bool,
+}
+
+fn find_worker_session(
+    dispatch: &OrcaDispatch,
+    claude: &[ClaudeSession],
+    codex: &[CodexRollout],
+) -> Option<WorkerSession> {
+    let floor = dispatch
+        .created_s
+        .and_then(|s| u64::try_from((s - ORCA_START_SLACK_S).max(0)).ok())
+        .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
+    let wants = |tool: &str| dispatch.agent.as_deref().is_none_or(|agent| agent.contains(tool));
+    let same_tree = |cwd: Option<&str>| match (cwd, dispatch.worktree_path.as_deref()) {
+        (Some(cwd), Some(tree)) => cwd == tree,
+        _ => true,
+    };
+    let recent = |modified: SystemTime| floor.is_none_or(|floor| modified >= floor);
+    let from_claude = || {
+        claude
+            .iter()
+            .filter(|s| wants("claude") && recent(s.file.modified) && same_tree(s.cwd.as_deref()))
+            .find(|s| adapters::opens_with(&s.file.path, &dispatch.id, ORCA_OPEN_BYTES))
+            .map(|s| WorkerSession {
+                path: s.file.path.clone(),
+                modified: s.file.modified,
+                len: s.file.len,
+                claude: true,
+            })
+    };
+    let from_codex = || {
+        codex
+            .iter()
+            .filter(|r| wants("codex") && recent(r.file.modified) && same_tree(r.cwd.as_deref()))
+            .find(|r| adapters::opens_with(&r.file.path, &dispatch.id, ORCA_OPEN_BYTES))
+            .map(|r| WorkerSession {
+                path: r.file.path.clone(),
+                modified: r.file.modified,
+                len: r.file.len,
+                claude: false,
+            })
+    };
+    from_claude().or_else(from_codex)
+}
 
 fn rfc3339(seconds: i64) -> Option<String> {
     DateTime::from_timestamp(seconds, 0).map(|t| t.to_rfc3339())
@@ -360,6 +416,8 @@ impl Collector {
         let mut executions = Vec::new();
         // Session id (as the tool records it) -> node id, to attach delegated sessions to their parent.
         let mut node_of_session: HashMap<String, String> = HashMap::new();
+        // Transcript or rollout file -> the process node that owns it.
+        let mut owner_of_file: HashMap<PathBuf, String> = HashMap::new();
         let mut parent_of: Vec<(String, String)> = Vec::new();
         for item in &seen {
             let process_id = format!("process:{}:{}", item.pid, item.start);
@@ -408,6 +466,9 @@ impl Collector {
                 if let Some(id) = usage.session_id.clone() {
                     node_of_session.insert(id, node.id.clone());
                 }
+                if let Some(file) = &file {
+                    owner_of_file.insert(file.clone(), node.id.clone());
+                }
                 if item.tool == "Claude Code" {
                     subagents = file.map(|f| self.claude_subagent_nodes(&f, &node)).unwrap_or_default();
                 }
@@ -419,6 +480,7 @@ impl Collector {
         // Sessions no process claimed: the desktop apps host many sessions behind one server process, so the
         // tools' own session stores are the only evidence of which projects are being worked on. Counters are
         // confirmed for the file, but a file does not prove a live process, so status comes from write recency.
+        self.link_orca_workers(&mut executions, &mut claimed, &owner_of_file, &mut node_of_session);
         let host_alive = |tool: &str| seen.iter().any(|item| item.tool == tool);
         let mut passive = Vec::new();
         for rollout in adapters::codex_recent_rollouts(SESSION_WINDOW) {
@@ -532,13 +594,6 @@ impl Collector {
             }
         }
         executions.extend(passive);
-        if let Some(db) = adapters::orca_db_path() {
-            let since = SystemTime::now()
-                .checked_sub(SESSION_WINDOW)
-                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_secs() as i64);
-            executions.extend(orca_nodes(&adapters::orca_dispatches(&db, since)));
-        }
 
         attach_parents(&mut executions, &node_of_session, parent_of);
 
@@ -548,6 +603,68 @@ impl Collector {
             executions,
             collector_error: None,
         }
+    }
+
+    /// Orca worker nodes, enriched with the model and usage of the session each one ran. A session already owned by
+    /// a live process is folded into the worker (the process node and its subagents move under it) so the same
+    /// work is never listed twice.
+    fn link_orca_workers(
+        &self,
+        executions: &mut Vec<ExecutionNode>,
+        claimed: &mut Vec<PathBuf>,
+        owner_of_file: &HashMap<PathBuf, String>,
+        node_of_session: &mut HashMap<String, String>,
+    ) {
+        let Some(db) = adapters::orca_db_path() else {
+            return;
+        };
+        let since = SystemTime::now()
+            .checked_sub(SESSION_WINDOW)
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs() as i64);
+        let dispatches = adapters::orca_dispatches(&db, since);
+        let mut nodes = orca_nodes(&dispatches);
+        let claude = adapters::claude_recent_sessions(SESSION_WINDOW);
+        let codex = adapters::codex_recent_rollouts(SESSION_WINDOW);
+        let mut subagents = Vec::new();
+        for dispatch in &dispatches {
+            let id = format!("orca-dispatch:{}", dispatch.id);
+            let Some(found) = find_worker_session(dispatch, &claude, &codex) else {
+                continue;
+            };
+            let parse = if found.claude {
+                adapters::parse_claude
+            } else {
+                adapters::parse_codex
+            };
+            let Some(usage) = self.cached(&found.path, found.modified, found.len, parse) else {
+                continue;
+            };
+            let Some(node) = nodes.iter_mut().find(|n| n.id == id) else {
+                continue;
+            };
+            apply_usage(node, &usage, Reliability::Confirmed, ORCA_LINK_SOURCE.into());
+            node.last_activity_at = usage.last_event_at.clone().or_else(|| node.last_activity_at.take());
+            if let Some(session) = usage.session_id.clone() {
+                node_of_session.insert(session, id.clone());
+            }
+            if let Some(owner) = owner_of_file.get(&found.path) {
+                for other in executions.iter_mut().filter(|n| n.parent_id.as_ref() == Some(owner)) {
+                    other.parent_id = Some(id.clone());
+                }
+                for target in node_of_session.values_mut().filter(|t| *t == owner) {
+                    *target = id.clone();
+                }
+                executions.retain(|n| &n.id != owner);
+            } else {
+                claimed.push(found.path.clone());
+                if found.claude {
+                    subagents.extend(self.claude_subagent_nodes(&found.path, node));
+                }
+            }
+        }
+        executions.extend(nodes);
+        executions.extend(subagents);
     }
 
     /// Subagents Claude Code wrote beside `session`, as children of the node that owns that session. Their
@@ -910,6 +1027,8 @@ mod tests {
             parent_task_id: None,
             status: status.into(),
             depth: 1,
+            worktree_path: None,
+            agent: None,
             title: Some(format!("title {id}")),
             created_s: Some(1_700_000_000),
             completed_s: None,
@@ -1028,6 +1147,58 @@ mod tests {
         let mut pids: Vec<u32> = items.iter().map(|i| i.pid).collect();
         pids.sort();
         assert_eq!(pids, [11, 20, 30, 40]);
+    }
+
+    fn transcript(name: &str, body: &str) -> TranscriptFile {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-{name}.jsonl", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        TranscriptFile {
+            path,
+            modified: meta.modified().unwrap(),
+            len: meta.len(),
+        }
+    }
+
+    #[test]
+    fn an_orca_worker_is_matched_to_the_session_that_opens_with_its_dispatch_id() {
+        let worker = transcript("w-open", "{\"m\":\"You are dispatch ctx_w1 on task t\"}\n");
+        // The coordinator's own session also mentions the id, but only after a long unrelated prefix.
+        let coordinator = transcript("w-coord", &format!("{}ctx_w1\n", "x".repeat(300_000)));
+        let elsewhere = transcript("w-else", "{\"m\":\"ctx_w1 in another repo\"}\n");
+        let claude = vec![
+            ClaudeSession {
+                file: coordinator.clone(),
+                cwd: Some("/repo".into()),
+            },
+            ClaudeSession {
+                file: elsewhere.clone(),
+                cwd: Some("/other".into()),
+            },
+            ClaudeSession {
+                file: worker.clone(),
+                cwd: Some("/repo".into()),
+            },
+        ];
+        let mut d = dispatch("ctx_w1", "run", None, "completed");
+        d.agent = Some("claude".into());
+        d.worktree_path = Some("/repo".into());
+        d.created_s = Some(0);
+        let found = find_worker_session(&d, &claude, &[]).expect("worker session");
+        assert_eq!(found.path, worker.path);
+        assert!(found.claude);
+        // A different agent, a different worktree, or a dispatch that started after the file was written: no match.
+        d.agent = Some("codex".into());
+        assert!(find_worker_session(&d, &claude, &[]).is_none());
+        d.agent = Some("claude".into());
+        d.worktree_path = Some("/nowhere".into());
+        assert!(find_worker_session(&d, &claude, &[]).is_none());
+        d.worktree_path = Some("/repo".into());
+        d.created_s = Some(i64::MAX / 4);
+        assert!(find_worker_session(&d, &claude, &[]).is_none());
+        for f in [&worker, &coordinator, &elsewhere] {
+            let _ = std::fs::remove_file(&f.path);
+        }
     }
 
     /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator
