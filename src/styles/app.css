@@ -1585,6 +1585,7 @@ select.field {
   border-style: dashed;
 }
 .bar-idle,
+.bar-inactive,
 .bar-unknown {
   border-style: dotted;
 }

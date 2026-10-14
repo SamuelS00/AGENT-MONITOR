@@ -7,7 +7,7 @@ export interface Metric<T> {
   source?: string;
 }
 
-export type AgentStatus = "running" | "waiting" | "completed" | "failed" | "disconnected" | "idle" | "unknown";
+export type AgentStatus = "running" | "waiting" | "completed" | "failed" | "disconnected" | "idle" | "inactive" | "unknown";
 export type AgentRole = "orchestrator" | "agent" | "subagent";
 export type EventKind = "start" | "tool" | "spawn" | "wait" | "resume" | "complete" | "error" | "disconnect";
 

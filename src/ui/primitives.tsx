@@ -34,6 +34,13 @@ export function StatusGlyph({ status, size = 12, label = false }: { status: Agen
         return <circle cx="6" cy="6" r="4.1" fill="none" stroke={c} strokeWidth="1.3" strokeDasharray="1.9 1.9" />;
       case "idle":
         return <circle cx="6" cy="6" r="4.1" fill="none" stroke={c} strokeWidth="1.3" />;
+      case "inactive":
+        return (
+          <>
+            <circle cx="6" cy="6" r="4.1" fill="none" stroke={c} strokeWidth="1.3" />
+            <path d="M4.2 6h3.6" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+          </>
+        );
       default:
         return <path d="M6 1.7 10.3 6 6 10.3 1.7 6Z" fill="none" stroke={c} strokeWidth="1.3" strokeLinejoin="round" />;
     }

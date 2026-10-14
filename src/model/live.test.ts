@@ -147,4 +147,34 @@ describe("datasetFromSnapshot", () => {
     );
     expect(without.tools[0].capabilities.usage).toBe("unavailable");
   });
+
+  it("nests recorded subagents under their session and keeps inactive sessions out of the active count", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot([
+        { id: "fixture-execution:main", label: "main", tool: "Claude Code", status: "running", relationship: "confirmed" },
+        {
+          id: "fixture-execution:sub",
+          parentId: "fixture-execution:main",
+          label: "Explore",
+          tool: "Claude Code",
+          status: "inactive",
+          relationship: "confirmed",
+        },
+        {
+          id: "fixture-execution:deep",
+          parentId: "fixture-execution:main",
+          label: "general-purpose",
+          tool: "Claude Code",
+          status: "idle",
+          relationship: "inferred",
+        },
+      ]),
+    );
+    expect(dataset.sessions).toHaveLength(1);
+    const byId = new Map(dataset.nodes.map((n) => [n.id, n]));
+    expect(byId.get("fixture-execution:sub")?.role).toBe("agent");
+    expect(byId.get("fixture-execution:sub")?.status).toBe("inactive");
+    expect(byId.get("fixture-execution:sub")?.relationshipNote).toBeUndefined();
+    expect(byId.get("fixture-execution:deep")?.relationshipNote).toContain("not confirmed");
+  });
 });
