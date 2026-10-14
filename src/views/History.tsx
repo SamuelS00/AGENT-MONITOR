@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { fmtAgo, fmtDate, fmtDuration, fmtShortClock, fmtTokens } from "../model/format";
 import type { HistorySession } from "../model/types";
 import { EmptyState, Segmented, StatusGlyph, Val } from "../ui/primitives";

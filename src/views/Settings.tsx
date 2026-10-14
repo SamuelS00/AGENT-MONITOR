@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { usePersisted, useStore } from "../app/store";
+import { usePersisted } from "../app/usePersisted";
+import { useStore } from "../app/storeContext";
 import { Banner, EmptyState, Kbd, Segmented } from "../ui/primitives";
 import type { Capability } from "../model/types";
 import type { SourceReliability } from "../types";

@@ -1,5 +1,5 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { STATUS_HINT, STATUS_LABEL, STATUS_ORDER } from "../model/status";
 import { confirmed, estimated, unavailable, fmtTokens } from "../model/format";
 import { Banner, Kbd, Segmented, StatusGlyph, Val } from "../ui/primitives";

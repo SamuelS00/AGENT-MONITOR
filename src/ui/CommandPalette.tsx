@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useStore, type View } from "../app/store";
-import { NAV } from "./Shell";
+import type { View } from "../app/store";
+import { useStore } from "../app/storeContext";
+import { NAV } from "./nav";
 import { STATUS_LABEL } from "../model/status";
 import { StatusGlyph, Kbd } from "./primitives";
 import type { AgentStatus } from "../model/types";

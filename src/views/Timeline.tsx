@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { concurrency, descendants, visibleRows } from "../model/tree";
 import { fmtClock, fmtDate, fmtDuration, fmtShortClock } from "../model/format";
 import { STATUS_LABEL } from "../model/status";

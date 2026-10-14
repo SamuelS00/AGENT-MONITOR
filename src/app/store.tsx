@@ -1,86 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { inTauri, loadSnapshot, refreshCollector } from "../monitor";
 import { buildSample } from "../model/fixtures";
 import { datasetFromSnapshot } from "../model/live";
-import { buildIndex, type TreeIndex } from "../model/tree";
+import { buildIndex } from "../model/tree";
 import type { Dataset } from "../model/types";
+import { Ctx, type Density, type ExplorerMode, type Store, type ThemePref, type View } from "./storeContext";
+import { usePersisted } from "./usePersisted";
 
-export type View = "monitor" | "explorer" | "timeline" | "history" | "settings" | "system";
-export type ThemePref = "system" | "light" | "dark";
-export type Density = "regular" | "compact";
-export type ExplorerMode = "tree" | "graph";
-
-const read = <T,>(key: string, fallback: T): T => {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? (JSON.parse(v) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-const write = (key: string, v: unknown) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(v));
-  } catch {
-    /* storage may be blocked */
-  }
-};
-
-export function usePersisted<T>(key: string, initial: T) {
-  const [v, setV] = useState<T>(() => read(key, initial));
-  useEffect(() => write(key, v), [key, v]);
-  return [v, setV] as const;
-}
-
-interface Store {
-  data: Dataset;
-  index: TreeIndex;
-  now: number;
-  loading: boolean;
-  canLive: boolean;
-  source: "sample" | "live";
-  setSource: (s: "sample" | "live") => void;
-  refresh: () => void;
-  lastRefresh: number;
-  view: View;
-  go: (v: View) => void;
-  selectedId?: string;
-  select: (id?: string) => void;
-  historyId?: string;
-  selectHistory: (id?: string) => void;
-  sessionId?: string;
-  setSessionId: (id: string) => void;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  setExpanded: (f: (s: Set<string>) => Set<string>) => void;
-  mode: ExplorerMode;
-  setMode: (m: ExplorerMode) => void;
-  inspectorOpen: boolean;
-  setInspectorOpen: (b: boolean) => void;
-  sidebarOpen: boolean;
-  setSidebarOpen: (b: boolean) => void;
-  sidebarW: number;
-  setSidebarW: (n: number) => void;
-  inspectorW: number;
-  setInspectorW: (n: number) => void;
-  theme: ThemePref;
-  setTheme: (t: ThemePref) => void;
-  resolvedTheme: "light" | "dark";
-  density: Density;
-  setDensity: (d: Density) => void;
-  projectFilter?: string;
-  setProjectFilter: (p?: string) => void;
-  paletteOpen: boolean;
-  setPaletteOpen: (b: boolean) => void;
-  openInExplorer: (id: string) => void;
-}
-
-const Ctx = createContext<Store | null>(null);
-export const useStore = () => {
-  const s = useContext(Ctx);
-  if (!s) throw new Error("StoreProvider missing");
-  return s;
-};
+export type { Density, ExplorerMode, ThemePref, View } from "./storeContext";
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const canLive = inTauri();

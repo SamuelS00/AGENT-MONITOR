@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from "react";
 import { ModelBadge } from "../ui/ModelBadge";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { descendants, durationMs, rollupTokens, sessionStatus } from "../model/tree";
 import { fmtDuration, fmtTokens } from "../model/format";
 import { STATUS_ORDER, isActive } from "../model/status";
 import type { AgentStatus } from "../model/types";
-import { Banner, EmptyState, SkeletonRows, StatusGlyph, Val, copy, useMenu } from "../ui/primitives";
+import { Banner, EmptyState, SkeletonRows, StatusGlyph, Val } from "../ui/primitives";
+import { copy } from "../ui/clipboard";
+import { useMenu } from "../ui/useMenu";
 
 type Scope = "active" | "attention" | "all";
 const attention = (s: AgentStatus) => s === "waiting" || s === "failed" || s === "disconnected";

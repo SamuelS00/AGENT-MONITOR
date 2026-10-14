@@ -3,7 +3,7 @@ import { ModelBadge } from "../ui/ModelBadge";
 import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { parallelIds, rollupTokens, visibleRows } from "../model/tree";
 import { fmtTokens } from "../model/format";
 import type { AgentNode } from "../model/types";

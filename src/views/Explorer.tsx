@@ -1,10 +1,12 @@
 import { lazy, Suspense, useMemo, useRef } from "react";
 import { ModelBadge } from "../ui/ModelBadge";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, ListTree } from "lucide-react";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { descendants, durationMs, parallelIds, rollupTokens, visibleRows, type Row } from "../model/tree";
 import { fmtDuration, fmtTokens } from "../model/format";
-import { Banner, EmptyState, Segmented, SkeletonRows, StatusGlyph, Val, copy, useMenu } from "../ui/primitives";
+import { Banner, EmptyState, Segmented, SkeletonRows, StatusGlyph, Val } from "../ui/primitives";
+import { copy } from "../ui/clipboard";
+import { useMenu } from "../ui/useMenu";
 
 const Graph = lazy(() => import("./Graph"));
 

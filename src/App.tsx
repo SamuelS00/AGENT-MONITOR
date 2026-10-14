@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { StoreProvider, useStore, type View } from "./app/store";
+import { StoreProvider, type View } from "./app/store";
+import { useStore } from "./app/storeContext";
 import { CommandPalette } from "./ui/CommandPalette";
 import { Inspector } from "./ui/Inspector";
 import { Resizer } from "./ui/primitives";

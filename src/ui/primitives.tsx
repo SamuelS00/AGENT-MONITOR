@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type MouseEvent as RMouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type MouseEvent as RMouseEvent } from "react";
 import type { AgentStatus, Metric } from "../model/types";
 import { STATUS_LABEL } from "../model/status";
 
@@ -258,22 +258,3 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
     </div>
   );
 }
-
-export function useMenu() {
-  const [m, setM] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
-  const close = useCallback(() => setM(null), []);
-  const open = useCallback((e: RMouseEvent, items: MenuItem[]) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setM({ x: e.clientX, y: e.clientY, items });
-  }, []);
-  const openAt = useCallback((el: HTMLElement, items: MenuItem[]) => {
-    const r = el.getBoundingClientRect();
-    setM({ x: r.left, y: r.bottom + 4, items });
-  }, []);
-  return { open, openAt, node: m ? <Menu {...m} onClose={close} /> : null };
-}
-
-export const copy = (text: string) => {
-  void navigator.clipboard?.writeText(text).catch(() => undefined);
-};

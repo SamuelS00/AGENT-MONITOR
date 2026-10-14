@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { ModelBadge } from "./ModelBadge";
-import { useStore } from "../app/store";
+import { useStore } from "../app/storeContext";
 import { ancestors, durationMs, parallelIds, rollupTokens } from "../model/tree";
 import { fmtAgo, fmtClock, fmtDuration, fmtTokens } from "../model/format";
 import { STATUS_HINT } from "../model/status";
 import type { AgentEvent } from "../model/types";
-import { EmptyState, StatusGlyph, Val, copy } from "./primitives";
+import { copy } from "./clipboard";
+import { EmptyState, StatusGlyph, Val } from "./primitives";
 
 const Row = ({ k, children, mono }: { k: string; children: ReactNode; mono?: boolean }) => (
   <div className="kv">
