@@ -900,6 +900,50 @@ mod tests {
         assert!(matches!(orca_dispatch_status(&d), ExecutionStatus::Running));
     }
 
+    /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator
+    /// run with two orchestrators, their agents and one subagent, read through the real SQL and mapping.
+    #[test]
+    fn a_three_level_orca_orchestration_is_reconstructed_from_its_database() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-{}-orca-e2e.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
+                   assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
+                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT);
+                 INSERT INTO tasks VALUES ('task_orchA', NULL, 'Backend workstream'), ('task_orchB', NULL, 'Frontend workstream'),
+                   ('task_agentA1', NULL, 'Write the parser'), ('task_agentB1', NULL, 'Style the table'), ('task_subA1x', NULL, 'Check edge cases');
+                 INSERT INTO dispatch_contexts VALUES ('oA', 'run', 'task_orchA', NULL, NULL, 'hA', 'dispatched', 1, '2999-01-01 10:00:00', NULL, '2999-01-01 10:09:00');
+                 INSERT INTO dispatch_contexts VALUES ('oB', 'run', 'task_orchB', NULL, NULL, 'hB', 'dispatched', 1, '2999-01-01 10:00:05', NULL, '2999-01-01 10:09:00');
+                 INSERT INTO dispatch_contexts VALUES ('aA1', 'run', 'task_agentA1', 'oA', 'hA', 'hA1', 'dispatched', 2, '2999-01-01 10:02:00', NULL, '2999-01-01 10:09:00');
+                 INSERT INTO dispatch_contexts VALUES ('aB1', 'run', 'task_agentB1', 'oB', 'hB', 'hB1', 'completed', 2, '2999-01-01 10:02:30', '2999-01-01 10:05:00', NULL);
+                 INSERT INTO dispatch_contexts VALUES ('sA1x', 'run', 'task_subA1x', 'aA1', 'hA1', 'hS', 'failed', 3, '2999-01-01 10:04:00', '2999-01-01 10:06:00', NULL);",
+            )
+            .unwrap();
+        }
+        let nodes = orca_nodes(&adapters::orca_dispatches(&path, 0));
+        let by = |id: &str| {
+            nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+        };
+        let parent = |id: &str| by(id).parent_id.clone();
+        assert_eq!(nodes.len(), 6, "one run plus five workers");
+        assert_eq!(parent("orca-dispatch:oA").as_deref(), Some("orca-run:run"));
+        assert_eq!(parent("orca-dispatch:oB").as_deref(), Some("orca-run:run"));
+        assert_eq!(parent("orca-dispatch:aA1").as_deref(), Some("orca-dispatch:oA"));
+        assert_eq!(parent("orca-dispatch:aB1").as_deref(), Some("orca-dispatch:oB"));
+        assert_eq!(parent("orca-dispatch:sA1x").as_deref(), Some("orca-dispatch:aA1"));
+        assert_eq!(by("orca-dispatch:sA1x").task.as_deref(), Some("Check edge cases"));
+        assert_eq!(by("orca-dispatch:oA").task.as_deref(), Some("Backend workstream"));
+        assert_eq!(format!("{:?}", by("orca-dispatch:aB1").status), "Completed");
+        assert_eq!(format!("{:?}", by("orca-dispatch:sA1x").status), "Failed");
+        assert_eq!(format!("{:?}", by("orca-run:run").status), "Running");
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Manual smoke test against this machine: `cargo test live_snapshot -- --ignored --nocapture`.
     #[test]
     #[ignore]
