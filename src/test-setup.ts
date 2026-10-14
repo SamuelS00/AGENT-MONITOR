@@ -17,6 +17,12 @@ if (!window.matchMedia) {
   });
 }
 
+// jsdom does not implement scrollIntoView; the command palette calls it to
+// keep the active row visible.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 // vitest runs without global APIs, so React Testing Library auto-cleanup must
 // be registered explicitly.
 afterEach(() => {
