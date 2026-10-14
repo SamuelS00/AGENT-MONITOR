@@ -177,4 +177,36 @@ describe("datasetFromSnapshot", () => {
     expect(byId.get("fixture-execution:sub")?.relationshipNote).toBeUndefined();
     expect(byId.get("fixture-execution:deep")?.relationshipNote).toContain("not confirmed");
   });
+
+  it("groups Orca runs and workers apart from projects and keeps their delegation", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot(
+        [
+          { id: "fixture-orca-run:r", label: "Orca run r", tool: "Orca", status: "running", relationship: "confirmed" },
+          {
+            id: "fixture-orca-dispatch:a",
+            parentId: "fixture-orca-run:r",
+            label: "Worker a",
+            tool: "Orca",
+            status: "waiting",
+            relationship: "confirmed",
+          },
+          {
+            id: "fixture-orca-dispatch:b",
+            parentId: "fixture-orca-dispatch:a",
+            label: "Worker b",
+            tool: "Orca",
+            status: "failed",
+            relationship: "confirmed",
+          },
+        ],
+        [],
+      ),
+    );
+    expect(dataset.sessions).toHaveLength(1);
+    expect(dataset.sessions[0].projectId).toBe("orca");
+    expect(dataset.projects[0].name).toBe("Orca orchestration");
+    expect(dataset.nodes.find((n) => n.id === "fixture-orca-dispatch:b")?.sessionId).toBe("fixture-orca-run:r");
+    expect(dataset.tools[0].capabilities).toMatchObject({ hierarchy: "confirmed", usage: "unavailable", process: "unavailable" });
+  });
 });

@@ -5,6 +5,8 @@ import { buildIndex } from "./tree";
 
 /** Servers that host sessions of many projects (Codex app-server, OpenCode serve) are grouped apart from projects. */
 const SERVICES_PROJECT: Project = { id: "services", name: "Background services" };
+/** Orca runs and workers span worktrees, so they have no single project directory. */
+const ORCA_PROJECT: Project = { id: "orca", name: "Orca orchestration" };
 
 const baseName = (p?: string) => p?.split("/").filter(Boolean).pop();
 
@@ -65,6 +67,7 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
     const exec = byId.get(n.id);
     if (exec?.role === "service") return SERVICES_PROJECT;
     const path = exec?.projectPath ?? procById.get(exec?.processId ?? "")?.projectPath;
+    if (!path && exec?.tool === "Orca") return ORCA_PROJECT;
     return path && path !== "/" ? { id: path, name: baseName(path) ?? path, path } : { id: "unknown", name: "No working directory" };
   };
   const projects = new Map<string, Project>();
@@ -93,15 +96,20 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
   const tools: DetectedTool[] = [...new Set([...s.processes.map((p) => p.tool), ...s.executions.map((e) => e.tool)])].map((name) => {
     const mine = s.executions.filter((e) => e.tool === name);
     const hasUsage = mine.some((e) => e.tokens != null);
+    const hasHierarchy = mine.some((e) => e.parentId);
     return {
       name,
       capabilities: {
         process: s.processes.some((p) => p.tool === name) ? "confirmed" : "unavailable",
         transcript: hasUsage ? "confirmed" : "unavailable",
         usage: hasUsage ? "confirmed" : "unavailable",
-        hierarchy: "unavailable",
+        hierarchy: hasHierarchy ? "confirmed" : "unavailable",
       },
-      note: hasUsage ? "Process discovery and session usage." : "Process discovery only.",
+      note: hasUsage
+        ? "Process discovery and session usage."
+        : hasHierarchy
+          ? "Recorded delegation; no model or usage."
+          : "Process discovery only.",
     };
   });
   return {

@@ -1,5 +1,5 @@
 export type SourceReliability = "confirmed" | "inferred" | "unavailable";
-export type ExecutionStatus = "running" | "idle" | "inactive" | "completed" | "unknown";
+export type ExecutionStatus = "running" | "waiting" | "failed" | "idle" | "inactive" | "completed" | "unknown";
 
 export interface ObservedProcess {
   id: string;
