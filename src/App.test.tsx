@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
-import { loadSnapshot, refreshCollector } from "./monitor";
+import { loadHistory, loadSnapshot, refreshCollector } from "./monitor";
 import type { MonitorSnapshot, ObservedProcess, ExecutionNode } from "./types";
 
 const { inTauriMock } = vi.hoisted(() => ({ inTauriMock: vi.fn(() => true) }));
@@ -14,9 +14,11 @@ vi.mock("./monitor", () => ({
   inTauri: () => inTauriMock(),
   loadSnapshot: vi.fn(),
   refreshCollector: vi.fn(),
+  loadHistory: vi.fn().mockResolvedValue([]),
 }));
 
 const loadMock = vi.mocked(loadSnapshot);
+const historyMock = vi.mocked(loadHistory);
 const refreshMock = vi.mocked(refreshCollector);
 
 const fixtureProcess: ObservedProcess = {
@@ -52,6 +54,8 @@ beforeEach(() => {
   inTauriMock.mockReturnValue(true);
   loadMock.mockReset();
   refreshMock.mockReset();
+  historyMock.mockReset();
+  historyMock.mockResolvedValue([]);
 });
 
 describe("App (live source)", () => {
@@ -134,6 +138,34 @@ describe("App (navigation)", () => {
         .getAllByRole("button")
         .map((b) => b.textContent),
     ).toEqual(["Monitor⌘1", "Execution Explorer⌘2", "Timeline⌘3", "Settings⌘4"]);
+  });
+
+  it("shows History once stored sessions exist", async () => {
+    historyMock.mockResolvedValue([
+      {
+        id: "Codex:s1",
+        project: "fixture-project",
+        title: "Fixture stored session",
+        tool: "Codex",
+        modelReliability: "unavailable",
+        startedAt: Date.now() - 3_600_000,
+        durationMs: 120_000,
+        agents: 2,
+        tokensReliability: "unavailable",
+        status: "inactive",
+      },
+    ]);
+    loadMock.mockResolvedValue(fixtureSnapshot);
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+
+    fireEvent.click(await views().findByRole("button", { name: /History/ }));
+    expect(await screen.findByText("Fixture stored session")).toBeInTheDocument();
+    // Tokens were never recorded for it: the row reads as unavailable, not zero.
+    const row = screen.getByText("Fixture stored session").closest(".trow") as HTMLElement;
+    expect(within(row).queryByText("0")).not.toBeInTheDocument();
+    // Model and tokens were never recorded: both cells read as unavailable.
+    expect(within(row).getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
   it("numbers the shortcuts by what is visible", async () => {

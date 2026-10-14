@@ -3,7 +3,7 @@
 // depends on real collector data. They guard the invariant from AGENTS.md:
 // unavailable metrics must stay unavailable — never coerced to zero.
 import { describe, expect, it } from "vitest";
-import { datasetFromSnapshot } from "./live";
+import { datasetFromSnapshot, historyFromStored } from "./live";
 import type { ExecutionNode, MonitorSnapshot, ObservedProcess } from "../types";
 
 const fixtureProcess: ObservedProcess = {
@@ -260,5 +260,44 @@ describe("datasetFromSnapshot", () => {
     expect(["fixture-meta", "fixture-orch", "fixture-sub"].map((id) => byId.get(id)?.role)).toEqual(["meta", "orchestrator", "subagent"]);
     expect(byId.get("fixture-plain")?.level).toBeUndefined();
     expect(dataset.sessions.map((s) => s.id)).toEqual(["fixture-meta", "fixture-plain"]);
+  });
+});
+
+describe("historyFromStored", () => {
+  it("keeps reliability and never turns missing values into zero", () => {
+    const [full, bare] = historyFromStored([
+      {
+        id: "Claude Code:s1",
+        project: "app",
+        title: "app",
+        tool: "Claude Code",
+        model: "claude-x",
+        modelReliability: "confirmed",
+        startedAt: 1_700_000_000_000,
+        durationMs: 60_000,
+        agents: 3,
+        tokens: 1200,
+        tokensReliability: "inferred",
+        status: "inactive",
+      },
+      {
+        id: "Codex:s2",
+        project: "No working directory",
+        title: "x",
+        tool: "Codex",
+        modelReliability: "unavailable",
+        startedAt: 1_700_000_100_000,
+        durationMs: 0,
+        agents: 1,
+        tokensReliability: "unavailable",
+        status: "disconnected",
+      },
+    ]);
+    expect(full.tokens).toEqual({ value: 1200, reliability: "inferred", source: "Stored snapshots" });
+    expect(full.model.value).toBe("claude-x");
+    expect(bare.model.reliability).toBe("unavailable");
+    expect(bare.tokens.reliability).toBe("unavailable");
+    expect(bare.tokens.value).toBeUndefined();
+    expect(bare.status).toBe("disconnected");
   });
 });

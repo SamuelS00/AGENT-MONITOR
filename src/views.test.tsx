@@ -9,6 +9,7 @@ vi.mock("./monitor", () => ({
   inTauri: () => false,
   loadSnapshot: vi.fn(),
   refreshCollector: vi.fn(),
+  loadHistory: vi.fn().mockResolvedValue([]),
 }));
 
 beforeEach(() => localStorage.clear());

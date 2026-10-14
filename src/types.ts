@@ -52,3 +52,20 @@ export interface MonitorSnapshot {
   executions: ExecutionNode[];
   collectorError?: string;
 }
+
+/** A session reconstructed by the backend from stored snapshots. */
+export interface StoredSession {
+  id: string;
+  project: string;
+  title: string;
+  tool: string;
+  model?: string;
+  modelReliability: SourceReliability;
+  /** Epoch milliseconds. */
+  startedAt: number;
+  durationMs: number;
+  agents: number;
+  tokens?: number;
+  tokensReliability: SourceReliability;
+  status: ExecutionStatus | "waiting" | "failed" | "disconnected" | "inactive" | "archived" | "unknown";
+}

@@ -29,6 +29,31 @@ impl Storage {
     }
 }
 
+impl Storage {
+    /// Stored snapshots observed at or after `since` (an RFC 3339 timestamp), oldest first. A payload that does not
+    /// parse is skipped rather than failing the whole read.
+    pub fn snapshots_since(&self, since: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT observed_at, payload_json FROM collector_snapshots WHERE observed_at >= ?1 ORDER BY observed_at")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|error| error.to_string())?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(at, json)| Some((at, serde_json::from_str(&json).ok()?)))
+            .collect())
+    }
+
+    /// Drop snapshots older than `before` so the database does not grow without bound.
+    pub fn prune_before(&self, before: &str) -> Result<usize, String> {
+        self.connection
+            .execute("DELETE FROM collector_snapshots WHERE observed_at < ?1", [before])
+            .map_err(|error| error.to_string())
+    }
+}
+
 fn migrate(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(include_str!("../migrations/0001_initial.sql"))

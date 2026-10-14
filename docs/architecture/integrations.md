@@ -22,6 +22,10 @@
 - OpenCode: reads `session` rows (`directory`, `model`, `tokens_*`) from the local database with a read-only connection; message and part content is never selected. Model falls back to the last assistant message `modelID`. A session whose counters are all zero stays unavailable. Optional columns (`agent`, `time_archived`, `title`) are used only when the database has them.
 - Gemini CLI: still unavailable until a real session file is inspected and documented.
 
+## Codex thread index
+
+Codex also keeps an index, `~/.codex/state_<n>.sqlite` (the highest `<n>`), opened read-only. From `threads` it reads the title (a user-set `name` wins), cumulative tokens, archive state, model and effort; the first user message and preview columns hold prompt text and are never selected. `thread_spawn_edges` gives delegations the tool recorded, which become confirmed parent edges. A thread the index lists but whose rollout is missing is shown from the index alone, with one cumulative token count and no input/output split.
+
 ## Sessions without a process
 
 The desktop apps host many sessions behind one server process (`codex app-server`, `codex exec-server`, `opencode serve`), whose own working directory says nothing about them. These servers are `role: service`, grouped as "Background services", and own no project. Sessions are listed from the tools' own stores instead, for the last 24 hours (at most 30 per tool): Codex rollouts, OpenCode sessions and Claude Code transcripts, each with the working directory the tool recorded. A session already owned by a live process is not listed twice.

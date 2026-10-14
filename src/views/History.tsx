@@ -47,7 +47,7 @@ export function History() {
             ) : undefined
           }
         >
-          The collector does not expose persisted sessions yet. Analytics will appear here once completed sessions are stored locally.
+          Sessions are recorded each time the collector refreshes. They will appear here once a few have been stored locally.
         </EmptyState>
       </div>
     );
@@ -126,6 +126,8 @@ export function History() {
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
           <option value="disconnected">Disconnected</option>
+          <option value="inactive">Stopped</option>
+          <option value="archived">Archived</option>
         </select>
         <div className="grow" />
         <Segmented

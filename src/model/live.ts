@@ -1,5 +1,5 @@
-import type { ExecutionNode, MonitorSnapshot, ObservedProcess, SourceReliability } from "../types";
-import type { AgentNode, Dataset, DetectedTool, Metric, Project, Session } from "./types";
+import type { ExecutionNode, MonitorSnapshot, ObservedProcess, SourceReliability, StoredSession } from "../types";
+import type { AgentNode, Dataset, DetectedTool, HistorySession, Metric, Project, Session } from "./types";
 import { unavailable } from "./format";
 import { buildIndex } from "./tree";
 
@@ -124,4 +124,24 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
     tools,
     collectorError: s.collectorError,
   };
+}
+
+const HISTORY_SOURCE = "Stored snapshots";
+
+/** History rows from the backend. Reliability and missing values carry over: no value is invented or zero-filled. */
+export function historyFromStored(rows: StoredSession[]): HistorySession[] {
+  const metric = <T>(value: T | undefined, reliability: SourceReliability): Metric<T> =>
+    value !== undefined && reliability !== "unavailable" ? { value, reliability, source: HISTORY_SOURCE } : unavailable<T>(HISTORY_SOURCE);
+  return rows.map((r) => ({
+    id: r.id,
+    project: r.project,
+    title: r.title,
+    tool: r.tool,
+    model: metric(r.model, r.modelReliability),
+    startedAt: r.startedAt,
+    durationMs: r.durationMs,
+    agents: metric(r.agents, "confirmed"),
+    tokens: metric(r.tokens, r.tokensReliability),
+    status: r.status,
+  }));
 }

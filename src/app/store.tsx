@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { inTauri, loadSnapshot, refreshCollector } from "../monitor";
+import { inTauri, loadHistory, loadSnapshot, refreshCollector } from "../monitor";
 import { buildSample } from "../model/fixtures";
-import { datasetFromSnapshot } from "../model/live";
+import { datasetFromSnapshot, historyFromStored } from "../model/live";
+import type { HistorySession } from "../model/types";
 import { buildIndex } from "../model/tree";
 import type { Dataset } from "../model/types";
 import { Ctx, type Density, type ExplorerMode, type Store, type ThemePref, type View } from "./storeContext";
@@ -16,12 +17,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const sampleRef = useRef<Dataset | null>(null);
   sampleRef.current ??= buildSample(now);
   const [live, setLive] = useState<Dataset>({ kind: "live", observedAt: 0, projects: [], sessions: [], nodes: [], history: [], tools: [] });
+  const [liveHistory, setLiveHistory] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(() => Date.now());
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  // Stored sessions are best effort: if they cannot be read, the live view still works and History stays hidden.
+  const reloadHistory = useCallback(() => {
+    loadHistory()
+      .then((rows) => setLiveHistory(historyFromStored(rows)))
+      .catch(() => setLiveHistory([]));
   }, []);
 
   const refresh = useCallback(async () => {
@@ -32,27 +41,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       setLive(datasetFromSnapshot(await refreshCollector()));
+      reloadHistory();
     } catch (e) {
       setLive((d) => ({ ...d, collectorError: String(e) }));
     } finally {
       setLoading(false);
       setLastRefresh(Date.now());
     }
-  }, [source]);
+  }, [source, reloadHistory]);
 
   useEffect(() => {
     if (source !== "live") return;
     setLoading(true);
     loadSnapshot()
-      .then((s) => setLive(datasetFromSnapshot(s)))
+      .then((s) => {
+        setLive(datasetFromSnapshot(s));
+        reloadHistory();
+      })
       .catch((e) => setLive((d) => ({ ...d, collectorError: String(e) })))
       .finally(() => {
         setLoading(false);
         setLastRefresh(Date.now());
       });
-  }, [source]);
+  }, [source, reloadHistory]);
 
-  const data = source === "sample" ? sampleRef.current : live;
+  const data = useMemo(() => (source === "sample" ? sampleRef.current! : { ...live, history: liveHistory }), [source, live, liveHistory]);
   const index = useMemo(() => buildIndex(data.nodes), [data.nodes]);
 
   const [view, setView] = useState<View>("monitor");
