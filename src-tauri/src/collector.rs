@@ -90,6 +90,8 @@ pub fn recognize(executable: &str, cmd: &[String]) -> Option<&'static str> {
 
 struct Seen {
     pid: u32,
+    /// Parent process id. Used only to fold a launcher shim into the binary it executes, never as delegation.
+    parent: Option<u32>,
     tool: &'static str,
     start: u64,
     cwd: Option<PathBuf>,
@@ -232,10 +234,21 @@ fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
         run.usage_source = Some(ORCA_SOURCE.into());
         out.push(run);
         for (dispatch, status) in members.into_iter().zip(statuses) {
-            let parent = dispatch
+            // Preference: the worker that created it, then the dispatch of its parent task, then the run.
+            let by_creator = dispatch
                 .parent_dispatch_id
                 .as_deref()
-                .filter(|parent| known.contains(parent) && *parent != dispatch.id)
+                .filter(|parent| known.contains(parent) && *parent != dispatch.id);
+            let by_task = || {
+                let parent_task = dispatch.parent_task_id.as_deref()?;
+                dispatches
+                    .iter()
+                    .rev()
+                    .find(|other| other.task_id == parent_task && other.id != dispatch.id)
+                    .map(|other| other.id.as_str())
+            };
+            let parent = by_creator
+                .or_else(by_task)
                 .map_or_else(|| run_node_id.clone(), |parent| format!("orca-dispatch:{parent}"));
             let mut node = ExecutionNode::new(
                 format!("orca-dispatch:{}", dispatch.id),
@@ -257,6 +270,25 @@ fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
         }
     }
     out
+}
+
+/// A launcher (`node codex.js`) and the native binary it starts are one agent. Keep the binary and drop the
+/// launcher when a same-tool process in the same directory names it as its parent. This is de-duplication of one
+/// run, not a delegation edge.
+fn drop_launcher_shims(seen: &mut Vec<Seen>) {
+    let shims: Vec<u32> = seen
+        .iter()
+        .filter(|outer| {
+            seen.iter().any(|inner| {
+                inner.parent == Some(outer.pid)
+                    && inner.tool == outer.tool
+                    && inner.cwd == outer.cwd
+                    && inner.pid != outer.pid
+            })
+        })
+        .map(|outer| outer.pid)
+        .collect();
+    seen.retain(|item| !shims.contains(&item.pid));
 }
 
 fn age_of(modified: SystemTime) -> Option<Duration> {
@@ -309,12 +341,17 @@ impl Collector {
             };
             seen.push(Seen {
                 pid: pid.as_u32(),
+                parent: process.parent().map(|p| p.as_u32()),
                 tool,
                 start: process.start_time(),
                 cwd: process.cwd().map(Path::to_path_buf),
                 args: cmd,
             });
         }
+        drop_launcher_shims(&mut seen);
+        // Sessions a command line names explicitly (`--resume <id>`) belong to that process; another process
+        // sharing the directory must not take them by the newest-file heuristic.
+        let reserved: Vec<String> = seen.iter().filter_map(|item| session_id_in(&item.args)).collect();
         // Newest process first so transcripts are assigned to at most one process each.
         seen.sort_by_key(|item| std::cmp::Reverse(item.start));
         let mut claimed: Vec<PathBuf> = Vec::new();
@@ -331,7 +368,7 @@ impl Collector {
                 .to_rfc3339();
             let service = is_service(item.tool, &item.args);
             let project = item.cwd.as_deref().filter(|cwd| !service && is_project_dir(cwd));
-            let linked = project.and_then(|cwd| self.link_usage(item, cwd, &mut claimed));
+            let linked = project.and_then(|cwd| self.link_usage(item, cwd, &mut claimed, &reserved));
             processes.push(ObservedProcess {
                 id: process_id.clone(),
                 pid: item.pid,
@@ -547,7 +584,13 @@ impl Collector {
 
     /// Pair a process with the newest unclaimed transcript of the same tool and working directory.
     /// Confirmed only when the command line names the session id; otherwise the pairing is inferred.
-    fn link_usage(&self, item: &Seen, cwd: &Path, claimed: &mut Vec<PathBuf>) -> Option<LinkedUsage> {
+    fn link_usage(
+        &self,
+        item: &Seen,
+        cwd: &Path,
+        claimed: &mut Vec<PathBuf>,
+        reserved: &[String],
+    ) -> Option<LinkedUsage> {
         if item.tool == "OpenCode" {
             return self.link_opencode(item, cwd, claimed);
         }
@@ -585,6 +628,10 @@ impl Collector {
         let (file, usage) = candidates
             .into_iter()
             .filter(|f| f.modified >= floor && !claimed.contains(&f.path))
+            .filter(|f| {
+                let stem = f.path.file_stem().map(|s| s.to_string_lossy().into_owned());
+                !stem.is_some_and(|stem| reserved.contains(&stem))
+            })
             .find_map(|f| {
                 let usage = self.cached(&f.path, f.modified, f.len, parse)?;
                 usage.parent_session_id.is_none().then_some((f, usage))
@@ -826,6 +873,7 @@ mod tests {
             run_id: run.into(),
             task_id: format!("task_{id}"),
             parent_dispatch_id: parent.map(str::to_owned),
+            parent_task_id: None,
             status: status.into(),
             depth: 1,
             title: Some(format!("title {id}")),
@@ -854,6 +902,28 @@ mod tests {
         assert_eq!(parent("orca-dispatch:d").as_deref(), Some("orca-run:run2"));
         assert_eq!(parent("orca-run:run1"), None);
         assert_eq!(nodes.iter().filter(|n| n.id.starts_with("orca-run:")).count(), 2);
+    }
+
+    #[test]
+    fn a_coordinator_declared_task_parent_nests_agents_under_their_orchestrator() {
+        // Real Orca 1.4 behavior: workers cannot start workers, so the coordinator records hierarchy with
+        // `worker-start --parent`; creator_dispatch_id stays empty and every dispatch has depth 1.
+        let mut agent = dispatch("agent", "run1", None, "dispatched");
+        agent.task_id = "task_agent".into();
+        agent.parent_task_id = Some("task_orch".into());
+        let mut orch = dispatch("orch", "run1", None, "failed");
+        orch.task_id = "task_orch".into();
+        let mut stray = dispatch("stray", "run1", None, "completed");
+        stray.parent_task_id = Some("task_unknown".into());
+        let nodes = orca_nodes(&[orch, agent, stray]);
+        let parent = |id: &str| nodes.iter().find(|n| n.id == id).and_then(|n| n.parent_id.clone());
+        assert_eq!(parent("orca-dispatch:agent").as_deref(), Some("orca-dispatch:orch"));
+        assert_eq!(parent("orca-dispatch:orch").as_deref(), Some("orca-run:run1"));
+        assert_eq!(
+            parent("orca-dispatch:stray").as_deref(),
+            Some("orca-run:run1"),
+            "unknown parent task falls back to the run"
+        );
     }
 
     #[test]
@@ -900,6 +970,32 @@ mod tests {
         assert!(matches!(orca_dispatch_status(&d), ExecutionStatus::Running));
     }
 
+    fn seen(pid: u32, parent: Option<u32>, tool: &'static str, cwd: &str) -> Seen {
+        Seen {
+            pid,
+            parent,
+            tool,
+            start: 1,
+            cwd: Some(PathBuf::from(cwd)),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_launcher_and_the_binary_it_runs_count_as_one_agent() {
+        let mut items = vec![
+            seen(10, Some(1), "Codex", "/p"),
+            seen(11, Some(10), "Codex", "/p"),       // binary started by the launcher
+            seen(20, Some(1), "Codex", "/p"),        // unrelated agent, same directory
+            seen(30, Some(20), "Claude Code", "/p"), // different tool: not a shim
+            seen(40, Some(20), "Codex", "/other"),   // different directory: not a shim
+        ];
+        drop_launcher_shims(&mut items);
+        let mut pids: Vec<u32> = items.iter().map(|i| i.pid).collect();
+        pids.sort();
+        assert_eq!(pids, [11, 20, 30, 40]);
+    }
+
     /// Synthetic stand-in for a real Orca run (the Orca CLI was not runnable when this was written): a coordinator
     /// run with two orchestrators, their agents and one subagent, read through the real SQL and mapping.
     #[test]
@@ -911,9 +1007,9 @@ mod tests {
             c.execute_batch(
                 "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
                    assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
-                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT);
-                 INSERT INTO tasks VALUES ('task_orchA', NULL, 'Backend workstream'), ('task_orchB', NULL, 'Frontend workstream'),
-                   ('task_agentA1', NULL, 'Write the parser'), ('task_agentB1', NULL, 'Style the table'), ('task_subA1x', NULL, 'Check edge cases');
+                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT, parent_id TEXT);
+                 INSERT INTO tasks VALUES ('task_orchA', NULL, 'Backend workstream', NULL), ('task_orchB', NULL, 'Frontend workstream', NULL),
+                   ('task_agentA1', NULL, 'Write the parser', NULL), ('task_agentB1', NULL, 'Style the table', 'task_orchB'), ('task_subA1x', NULL, 'Check edge cases', NULL);
                  INSERT INTO dispatch_contexts VALUES ('oA', 'run', 'task_orchA', NULL, NULL, 'hA', 'dispatched', 1, '2999-01-01 10:00:00', NULL, '2999-01-01 10:09:00');
                  INSERT INTO dispatch_contexts VALUES ('oB', 'run', 'task_orchB', NULL, NULL, 'hB', 'dispatched', 1, '2999-01-01 10:00:05', NULL, '2999-01-01 10:09:00');
                  INSERT INTO dispatch_contexts VALUES ('aA1', 'run', 'task_agentA1', 'oA', 'hA', 'hA1', 'dispatched', 2, '2999-01-01 10:02:00', NULL, '2999-01-01 10:09:00');
@@ -957,12 +1053,14 @@ mod tests {
         }
         for e in &snapshot.executions {
             println!(
-                "{:<12} {:?} proj={:?} {:?} parent={:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
+                "{:<12} {:?} proj={:?} {:?} parent={:?} id={} task={:?} {:<28} model={:?}({:?}) in={:?} out={:?} usage={:?} src={:?}",
                 e.tool,
                 e.role,
                 e.project_path,
                 e.status,
-                e.parent_id.is_some(),
+                e.parent_id.as_deref().map(|p| &p[p.len().saturating_sub(8)..]),
+                &e.id[e.id.len().saturating_sub(8)..],
+                e.task,
                 e.label,
                 e.model,
                 e.model_reliability,

@@ -508,6 +508,9 @@ pub struct OrcaDispatch {
     pub task_id: String,
     /// Dispatch whose worker created this one, set only for real delegation (see `orca_dispatches`).
     pub parent_dispatch_id: Option<String>,
+    /// Parent of this dispatch's task in Orca's task tree (`worker-start --parent`). This is where a coordinator
+    /// records orchestrator -> agent structure, because dispatched workers cannot start nested workers.
+    pub parent_task_id: Option<String>,
     /// `pending`, `dispatched`, `completed`, `failed` or `circuit_broken`, as Orca records it.
     pub status: String,
     pub depth: u64,
@@ -533,7 +536,8 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
                 CAST(strftime('%s', d.created_at) AS INTEGER),
                 CAST(strftime('%s', d.completed_at) AS INTEGER),
                 CAST(strftime('%s', d.last_heartbeat_at) AS INTEGER),
-                coalesce(nullif(t.display_name, ''), nullif(t.task_title, ''))
+                coalesce(nullif(t.display_name, ''), nullif(t.task_title, '')),
+                t.parent_id
          FROM dispatch_contexts d LEFT JOIN tasks t ON t.id = d.task_id
          WHERE d.status IN ('pending', 'dispatched') OR CAST(strftime('%s', d.created_at) AS INTEGER) >= ?1
          ORDER BY d.created_at",
@@ -556,6 +560,7 @@ pub fn orca_dispatches(db: &Path, created_since_s: i64) -> Vec<OrcaDispatch> {
             completed_s: row.get(9)?,
             heartbeat_s: row.get(10)?,
             title: row.get(11)?,
+            parent_task_id: row.get(12)?,
         })
     });
     rows.map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default()
@@ -805,8 +810,8 @@ mod tests {
             c.execute_batch(
                 "CREATE TABLE dispatch_contexts (id TEXT, run_id TEXT, task_id TEXT, creator_dispatch_id TEXT, creator_handle TEXT,
                    assignee_handle TEXT, status TEXT, depth INTEGER, created_at TEXT, completed_at TEXT, last_heartbeat_at TEXT);
-                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT);
-                 INSERT INTO tasks VALUES ('t1', '', 'Map the repo'), ('t2', 'Count tests', 'ignored when a display name exists');
+                 CREATE TABLE tasks (id TEXT, display_name TEXT, task_title TEXT, parent_id TEXT);
+                 INSERT INTO tasks VALUES ('t1', '', 'Map the repo', NULL), ('t2', 'Count tests', 'ignored when a display name exists', 't1');
                  INSERT INTO dispatch_contexts VALUES ('root', 'r', 't1', NULL, NULL, 'h1', 'dispatched', 1, '2026-10-14 10:00:00', NULL, '2026-10-14 10:05:00');
                  INSERT INTO dispatch_contexts VALUES ('kid', 'r', 't2', 'root', 'h1', 'h2', 'completed', 2, '2026-10-14 10:01:00', '2026-10-14 10:04:00', NULL);
                  INSERT INTO dispatch_contexts VALUES ('self', 'r', 't3', 'root', 'h3', 'h3', 'completed', 2, '2026-10-14 10:02:00', NULL, NULL);
@@ -829,6 +834,8 @@ mod tests {
             "creator == assignee is bookkeeping, not delegation"
         );
         assert_eq!(find("kid").depth, 2);
+        assert_eq!(find("kid").parent_task_id.as_deref(), Some("t1"));
+        assert_eq!(find("root").parent_task_id, None);
         assert_eq!(find("root").title.as_deref(), Some("Map the repo"));
         assert_eq!(find("kid").title.as_deref(), Some("Count tests"));
         assert_eq!(
