@@ -227,4 +227,38 @@ describe("datasetFromSnapshot", () => {
     expect(dataset.nodes[0].activity).toBe("Map the repository");
     expect(dataset.nodes[1].activity).toBeUndefined();
   });
+
+  it("keeps the recorded orchestration level and falls back to structure for plain nodes", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot(
+        [
+          { id: "fixture-meta", label: "meta", level: "meta", tool: "Claude Code", status: "running", relationship: "confirmed" },
+          {
+            id: "fixture-orch",
+            parentId: "fixture-meta",
+            label: "orch",
+            level: "orchestrator",
+            tool: "Orca",
+            status: "running",
+            relationship: "confirmed",
+          },
+          {
+            id: "fixture-sub",
+            parentId: "fixture-orch",
+            label: "sub",
+            level: "subagent",
+            tool: "Claude Code",
+            status: "idle",
+            relationship: "confirmed",
+          },
+          { id: "fixture-plain", label: "plain", tool: "Codex", status: "running", relationship: "confirmed" },
+        ],
+        [],
+      ),
+    );
+    const byId = new Map(dataset.nodes.map((n) => [n.id, n]));
+    expect(["fixture-meta", "fixture-orch", "fixture-sub"].map((id) => byId.get(id)?.role)).toEqual(["meta", "orchestrator", "subagent"]);
+    expect(byId.get("fixture-plain")?.level).toBeUndefined();
+    expect(dataset.sessions.map((s) => s.id)).toEqual(["fixture-meta", "fixture-plain"]);
+  });
 });

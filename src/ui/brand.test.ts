@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { brandOf, splitModel } from "./brand";
+import { brandOf, nodeBrandColor, splitModel } from "./brand";
+import { confirmed, unavailable } from "../model/format";
 
 describe("brandOf", () => {
   it("prefers the recorded provider over model and tool", () => {
@@ -28,5 +29,14 @@ describe("splitModel", () => {
 
   it("keeps the full id when nothing can be parsed", () => {
     expect(splitModel("-").name).toBe("-");
+  });
+});
+
+describe("nodeBrandColor", () => {
+  it("colors a node by the model it ran, and not at all when the model is unavailable", () => {
+    const base = { tool: "Orca", provider: undefined };
+    expect(nodeBrandColor({ ...base, model: confirmed("claude-opus-5-5") })).toBe("#d97757");
+    expect(nodeBrandColor({ ...base, model: confirmed("gpt-5.6-luna") })).toBe("#10a37f");
+    expect(nodeBrandColor({ ...base, model: unavailable<string>() })).toBeUndefined();
   });
 });

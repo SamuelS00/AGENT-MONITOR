@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { ModelBadge } from "../ui/ModelBadge";
+import { nodeBrandColor } from "../ui/brand";
 import { useStore } from "../app/storeContext";
 import { descendants, durationMs, rollupTokens, sessionStatus } from "../model/tree";
 import { fmtDuration, fmtTokens } from "../model/format";
@@ -161,7 +162,8 @@ export function Monitor() {
                       key={s.id}
                       role="row"
                       data-id={root.id}
-                      className={`trow session ${selectedId === root.id ? "selected" : ""} st-${status}`}
+                      className={`trow session ${selectedId === root.id ? "selected" : ""} st-${status} ${nodeBrandColor(root) ? "brand-row" : ""}`}
+                      style={nodeBrandColor(root) ? { ["--brand" as string]: nodeBrandColor(root) } : undefined}
                       onClick={() => select(root.id)}
                       onDoubleClick={() => openInExplorer(root.id)}
                       onContextMenu={(e) => {

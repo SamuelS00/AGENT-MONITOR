@@ -1,4 +1,4 @@
-import type { AgentStatus } from "./types";
+import type { AgentRole, AgentStatus } from "./types";
 
 export const STATUS_ORDER: AgentStatus[] = [
   "running",
@@ -34,6 +34,13 @@ export const STATUS_HINT: Record<AgentStatus, string> = {
   idle: "Process alive, no recent activity",
   inactive: "No live process observed and nothing written recently; the session may or may not have finished",
   unknown: "State could not be determined",
+};
+
+export const ROLE_LABEL: Record<AgentRole, string> = {
+  meta: "Meta-orchestrator",
+  orchestrator: "Orchestrator",
+  agent: "Agent",
+  subagent: "Subagent",
 };
 
 export const isActive = (s: AgentStatus) => s === "running" || s === "waiting" || s === "idle";

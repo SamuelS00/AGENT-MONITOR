@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "../app/storeContext";
+import { nodeBrandColor } from "../ui/brand";
 import { concurrency, descendants, endOf, isLive, visibleRows } from "../model/tree";
 import { fmtClock, fmtDate, fmtDuration, fmtShortClock } from "../model/format";
 import { STATUS_LABEL } from "../model/status";
@@ -172,8 +173,12 @@ export function Timeline() {
                   ))}
                   {hasBar && (
                     <span
-                      className={`bar bar-${n.status} ${live ? "bar-live" : ""} ${n.startedAt! < t0 ? "clip-l" : ""}`}
-                      style={{ left: `${pct(n.startedAt!)}%`, width: `${Math.max(0.35, pct(end!) - pct(n.startedAt!))}%` }}
+                      className={`bar bar-${n.status} ${nodeBrandColor(n) ? "brand-bar" : ""} ${live ? "bar-live" : ""} ${n.startedAt! < t0 ? "clip-l" : ""}`}
+                      style={{
+                        ["--brand" as string]: nodeBrandColor(n),
+                        left: `${pct(n.startedAt!)}%`,
+                        width: `${Math.max(0.35, pct(end!) - pct(n.startedAt!))}%`,
+                      }}
                       title={`${n.label} · ${STATUS_LABEL[n.status]}\n${fmtClock(n.startedAt!)} → ${n.endedAt ? fmtClock(n.endedAt) : live ? "now" : `${fmtClock(end!)} (last activity)`} (${fmtDuration(end! - n.startedAt!)})`}
                     >
                       {n.waits.map((w, i) => (

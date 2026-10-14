@@ -1,4 +1,6 @@
 import { lazy, Suspense, useMemo, useRef } from "react";
+import { nodeBrandColor } from "../ui/brand";
+import { ROLE_LABEL } from "../model/status";
 import { ModelBadge } from "../ui/ModelBadge";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, ListTree } from "lucide-react";
 import { useStore } from "../app/storeContext";
@@ -234,6 +236,7 @@ function Tree({ rootId }: { rootId: string }) {
         const runningKids = kids.filter((k) => k.status === "running").length;
         const roll = rollupTokens(index, n.id);
         const dur = durationMs(n, now);
+        const brand = nodeBrandColor(n);
         return (
           <div
             key={n.id}
@@ -242,7 +245,8 @@ function Tree({ rootId }: { rootId: string }) {
             aria-level={r.depth + 1}
             aria-expanded={r.hasChildren ? r.open : undefined}
             aria-selected={selectedId === n.id}
-            className={`trow tree-grid ${selectedId === n.id ? "selected" : ""} st-${n.status}`}
+            className={`trow tree-grid ${selectedId === n.id ? "selected" : ""} st-${n.status} ${brand ? "brand-row" : ""}`}
+            style={brand ? { ["--brand" as string]: brand } : undefined}
             onClick={() => select(n.id)}
             onDoubleClick={() => r.hasChildren && toggle(n.id)}
             onContextMenu={(e) => {
@@ -286,6 +290,7 @@ function Tree({ rootId }: { rootId: string }) {
               </button>
               <StatusGlyph status={n.status} />
               <span className="label trunc">{n.label}</span>
+              {n.level && <span className={`tag tag-role tag-${n.level}`}>{ROLE_LABEL[n.level]}</span>}
               {(r.depth === 0 || n.tool !== index.byId.get(n.parentId ?? "")?.tool) && <span className="tool-tag">{n.tool}</span>}
               {isPar && (
                 <span className="tag tag-par" title="Ran concurrently with a sibling">

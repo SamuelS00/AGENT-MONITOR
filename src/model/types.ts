@@ -8,7 +8,7 @@ export interface Metric<T> {
 }
 
 export type AgentStatus = "running" | "waiting" | "completed" | "failed" | "disconnected" | "idle" | "inactive" | "archived" | "unknown";
-export type AgentRole = "orchestrator" | "agent" | "subagent";
+export type AgentRole = "meta" | "orchestrator" | "agent" | "subagent";
 export type EventKind = "start" | "tool" | "spawn" | "wait" | "resume" | "complete" | "error" | "disconnect";
 
 export interface WaitSpan {
@@ -28,6 +28,8 @@ export interface AgentNode {
   sessionId: string;
   label: string;
   role: AgentRole;
+  /** Set only when the collector recorded this node's place in an orchestration. */
+  level?: AgentRole;
   tool: string;
   model: Metric<string>;
   status: AgentStatus;

@@ -1920,3 +1920,20 @@ select.field {
   min-width: 0;
   flex: 0 1 auto;
 }
+
+/* A row carries the color of the model it ran, so a tree reads at a glance by provider. */
+.brand-row {
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.tag-role {
+  border-color: color-mix(in srgb, var(--brand, var(--text-tertiary)) 40%, transparent);
+  background: color-mix(in srgb, var(--brand, var(--text-tertiary)) 12%, transparent);
+  color: var(--text-secondary);
+  text-transform: none;
+}
+.tag-meta {
+  font-weight: 600;
+}
+.bar.brand-bar {
+  box-shadow: inset 3px 0 0 var(--brand);
+}

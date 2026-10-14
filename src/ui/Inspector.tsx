@@ -3,7 +3,7 @@ import { ModelBadge } from "./ModelBadge";
 import { useStore } from "../app/storeContext";
 import { ancestors, durationMs, parallelIds, rollupTokens } from "../model/tree";
 import { fmtAgo, fmtClock, fmtDuration, fmtTokens } from "../model/format";
-import { STATUS_HINT } from "../model/status";
+import { ROLE_LABEL, STATUS_HINT } from "../model/status";
 import type { AgentEvent } from "../model/types";
 import { copy } from "./clipboard";
 import { EmptyState, StatusGlyph, Val } from "./primitives";
@@ -72,7 +72,7 @@ export function Inspector() {
           <h2>{node.label}</h2>
         </div>
         <div className="insp-sub">
-          {node.role[0].toUpperCase() + node.role.slice(1)} · {STATUS_HINT[node.status]}
+          {ROLE_LABEL[node.role]} · {STATUS_HINT[node.status]}
         </div>
         {node.activity && <div className="insp-activity">{node.activity}</div>}
         {chain.length > 0 && (

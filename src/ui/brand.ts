@@ -1,3 +1,4 @@
+import type { AgentNode } from "../model/types";
 export type Brand = "anthropic" | "openai" | "google" | "opencode" | "unknown";
 
 export const BRAND_COLOR: Record<Brand, string> = {
@@ -52,4 +53,10 @@ export function splitModel(id: string): { name: string; version?: string } {
   const cased = words.filter((w) => w !== "latest").map((w) => (w === "gpt" ? "GPT" : w[0].toUpperCase() + w.slice(1)));
   const dropPrefix = cased[0] === "Claude" && cased.length > 1 ? cased.slice(1) : cased;
   return { name: dropPrefix.join(" ") || id, version };
+}
+
+/** Brand color of the model a node ran, or undefined when the model is unavailable (never guessed from the tool alone). */
+export function nodeBrandColor(node: Pick<AgentNode, "model" | "provider" | "tool">): string | undefined {
+  if (node.model.reliability === "unavailable" || !node.model.value) return undefined;
+  return BRAND_COLOR[brandOf(node.provider?.value, node.model.value, node.tool)];
 }

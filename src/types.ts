@@ -18,6 +18,8 @@ export interface ExecutionNode {
   processId?: string;
   /** `service` is a background server that hosts sessions; it never owns a project. */
   role?: "session" | "service";
+  /** Position in an orchestration, from recorded structure only. Absent for plain sessions. */
+  level?: "meta" | "orchestrator" | "agent" | "subagent";
   /** Working directory the tool recorded for this session, when known. */
   projectPath?: string;
   label: string;
