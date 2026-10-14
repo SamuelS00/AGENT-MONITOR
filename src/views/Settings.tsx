@@ -1,20 +1,13 @@
 import { useState } from "react";
-import { usePersisted } from "../app/usePersisted";
 import { useStore } from "../app/storeContext";
+import { navFor } from "../ui/nav";
 import { Banner, EmptyState, Kbd, Segmented } from "../ui/primitives";
 import type { Capability } from "../model/types";
 import type { SourceReliability } from "../types";
 
-const TABS = ["Tools", "Integrations", "Permissions", "Privacy", "Appearance"] as const;
+const TABS = ["Tools", "Data & privacy", "Appearance"] as const;
 type Tab = (typeof TABS)[number];
 
-function Switch({ on, onChange, label, disabled }: { on: boolean; onChange?: (v: boolean) => void; label: string; disabled?: boolean }) {
-  return (
-    <button role="switch" aria-checked={on} aria-label={label} disabled={disabled} className="switch" onClick={() => onChange?.(!on)}>
-      <i />
-    </button>
-  );
-}
 const Setting = ({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) => (
   <div className="setting">
     <div className="grow">
@@ -49,14 +42,9 @@ export function Settings() {
       </nav>
       <div className="scroll settings-body">
         <div className="settings-inner">
-          <Banner>
-            Prototype: preferences are saved on this Mac but the collector does not read them yet. The monitor never writes to observed
-            tools.
-          </Banner>
+          <Banner>The monitor is read-only: it never writes to, or sends input to, an observed tool.</Banner>
           {tab === "Tools" && <Tools />}
-          {tab === "Integrations" && <Integrations />}
-          {tab === "Permissions" && <Permissions />}
-          {tab === "Privacy" && <Privacy />}
+          {tab === "Data & privacy" && <DataAndPrivacy />}
           {tab === "Appearance" && <Appearance />}
         </div>
       </div>
@@ -101,89 +89,62 @@ function Tools() {
   );
 }
 
-function Integrations() {
-  const [on, setOn] = usePersisted<Record<string, boolean>>("am.integrations", { claude: true, codex: true, opencode: true });
-  const items: [string, string, string, boolean][] = [
-    ["claude", "Claude Code session files", "~/.claude/projects (read-only)", true],
-    ["codex", "Codex session files", "~/.codex/sessions (read-only)", true],
-    ["opencode", "OpenCode storage", "~/.local/share/opencode (read-only)", true],
-    ["gemini", "Gemini CLI", "No session adapter yet. Process discovery only.", false],
+function DataAndPrivacy() {
+  // Facts about what the collector reads and keeps, not preferences: nothing here can be switched, because the
+  // collector has no such options.
+  const sources: [string, string][] = [
+    ["Running processes", "Which agent CLIs are running and where. Standard user access."],
+    ["Claude Code", "~/.claude/projects: transcripts and their subagents folders."],
+    ["Codex", "~/.codex: rollout files, live and archived."],
+    ["OpenCode", "~/.local/share/opencode/opencode.db, opened read-only."],
+    ["Orca", "~/Library/Application Support/orca/orchestration.db, opened read-only: runs, workers and task titles."],
+    ["Gemini CLI", "No session adapter yet. Process discovery only."],
+  ];
+  const keeps: [string, string][] = [
+    ["Prompts and responses", "Never read or stored."],
+    ["Process command lines", "Stored without flag values or free text, which can hold prompts or credentials."],
+    [
+      "Task titles",
+      "Short titles the tools recorded themselves (Orca task, Claude subagent, OpenCode session), shown as what an agent works on.",
+    ],
+    ["Snapshots", "Metadata only, in a local SQLite database on this Mac. No account, no network traffic."],
+  ];
+  const never: [string, string][] = [
+    ["Full Disk Access", "Not requested."],
+    ["Control other apps", "Never requested. The monitor cannot drive or alter an agent."],
   ];
   return (
     <>
-      <h2>Integrations</h2>
-      <p className="lede">Adapters read local files the tools already write. They never send input to, or change, a running session.</p>
-      <Setting title="Process discovery" desc="Lists running agent CLIs and their working directories.">
-        <span className="val-quiet">Always on</span>
-      </Setting>
-      {items.map(([k, t, d, avail]) => (
-        <Setting key={k} title={t} desc={d}>
-          <Switch on={avail && (on[k] ?? false)} disabled={!avail} label={t} onChange={(v) => setOn({ ...on, [k]: v })} />
-        </Setting>
-      ))}
-    </>
-  );
-}
-
-function Permissions() {
-  const rows: [string, string, string][] = [
-    ["Process listing", "Read which agent CLIs are running.", "Standard user access"],
-    ["Files in your home folder", "Read session files written by agent tools.", "Not checked"],
-    ["Full Disk Access", "Not requested. Only needed for protected folders.", "Not required"],
-    ["Control other apps", "Never requested. The monitor cannot drive or alter an agent.", "Never"],
-  ];
-  return (
-    <>
-      <h2>Permissions</h2>
-      <p className="lede">macOS permissions the monitor uses, and the ones it deliberately never asks for.</p>
-      {rows.map(([t, d, s]) => (
+      <h2>Data &amp; privacy</h2>
+      <p className="lede">Everything stays on this Mac. These are facts about the collector, not options.</p>
+      <h3 className="mt">What it reads</h3>
+      {sources.map(([t, d]) => (
         <Setting key={t} title={t} desc={d}>
-          <span className="val-quiet">{s}</span>
+          <span className="val-quiet">Read-only</span>
         </Setting>
       ))}
-    </>
-  );
-}
-
-function Privacy() {
-  const [redact, setRedact] = usePersisted("am.redact", true);
-  const [paths, setPaths] = usePersisted("am.paths", true);
-  const [ret, setRet] = usePersisted("am.retention", "30");
-  return (
-    <>
-      <h2>Privacy &amp; local collection</h2>
-      <p className="lede">Everything stays in a local database on this Mac. No account, no network traffic.</p>
-      <Setting title="Store prompts and responses" desc="Message content is never collected.">
-        <Switch on={false} disabled label="Store prompts" />
-      </Setting>
-      <Setting title="Store working directory paths" desc="Needed to group sessions by project.">
-        <Switch on={paths} onChange={setPaths} label="Store paths" />
-      </Setting>
-      <Setting title="Shorten home folder to ~" desc="Applies to paths shown in the interface.">
-        <Switch on={redact} onChange={setRedact} label="Shorten home" />
-      </Setting>
-      <Setting title="Keep history for">
-        <select className="field" value={ret} onChange={(e) => setRet(e.target.value)} aria-label="Retention">
-          <option value="7">7 days</option>
-          <option value="30">30 days</option>
-          <option value="90">90 days</option>
-          <option value="0">Forever</option>
-        </select>
-      </Setting>
-      <Setting title="Clear local history" desc="Not available in this prototype.">
-        <button className="btn" disabled>
-          Clear…
-        </button>
-      </Setting>
+      <h3 className="mt">What it keeps</h3>
+      {keeps.map(([t, d]) => (
+        <Setting key={t} title={t} desc={d}>
+          <span className="val-quiet" />
+        </Setting>
+      ))}
+      <h3 className="mt">What it never asks for</h3>
+      {never.map(([t, d]) => (
+        <Setting key={t} title={t} desc={d}>
+          <span className="val-quiet">Never</span>
+        </Setting>
+      ))}
     </>
   );
 }
 
 function Appearance() {
-  const { theme, setTheme, density, setDensity, setSidebarW, setInspectorW } = useStore();
+  const { data, theme, setTheme, density, setDensity, setSidebarW, setInspectorW } = useStore();
+  const hasHistory = data.history.length > 0;
   const keys: [string, string][] = [
     ["⌘K", "Command palette"],
-    ["⌘1–5", "Switch view"],
+    [`⌘1–${navFor({ hasHistory }).length}`, "Switch view"],
     ["⌘I", "Toggle inspector"],
     ["⌘\\", "Toggle sidebar"],
     ["⌘R", "Refresh"],

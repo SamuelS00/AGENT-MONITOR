@@ -4,6 +4,7 @@ import { useStore } from "./app/storeContext";
 import { CommandPalette } from "./ui/CommandPalette";
 import { Inspector } from "./ui/Inspector";
 import { Resizer } from "./ui/primitives";
+import { navFor, viewAvailable } from "./ui/nav";
 import { Sidebar, Toolbar } from "./ui/Shell";
 import { Explorer } from "./views/Explorer";
 import { History } from "./views/History";
@@ -20,7 +21,6 @@ const VIEWS: Record<View, () => React.JSX.Element> = {
   settings: Settings,
   system: System,
 };
-const KEYS: Record<string, View> = { "1": "monitor", "2": "explorer", "3": "timeline", "4": "history", "5": "settings" };
 const NO_INSPECTOR: View[] = ["settings", "system"];
 
 function Shell() {
@@ -39,16 +39,25 @@ function Shell() {
     refresh,
   } = s;
 
+  const hasHistory = s.data.history.length > 0;
+  const sample = s.source === "sample";
+  const available = viewAvailable(view, { hasHistory, sample });
+  // A view that disappeared (history without data, the design reference outside sample mode) falls back to Monitor.
   useEffect(() => {
+    if (!available) go("monitor");
+  }, [available, go]);
+
+  useEffect(() => {
+    const nav = navFor({ hasHistory });
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
         setPaletteOpen(!paletteOpen);
-      } else if (KEYS[k]) {
+      } else if (nav.some((n) => n.key === k)) {
         e.preventDefault();
-        go(KEYS[k]);
+        go(nav.find((n) => n.key === k)!.view);
       } else if (k === "i") {
         e.preventDefault();
         setInspectorOpen(!inspectorOpen);
@@ -62,9 +71,9 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, inspectorOpen, sidebarOpen, paletteOpen, setInspectorOpen, setSidebarOpen, setPaletteOpen, refresh]);
+  }, [go, hasHistory, inspectorOpen, sidebarOpen, paletteOpen, setInspectorOpen, setSidebarOpen, setPaletteOpen, refresh]);
 
-  const Active = VIEWS[view];
+  const Active = VIEWS[available ? view : "monitor"];
   const showInspector = inspectorOpen && !NO_INSPECTOR.includes(view);
   return (
     <div className={`app ${sidebarOpen ? "" : "no-sidebar"}`}>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { View } from "../app/store";
 import { useStore } from "../app/storeContext";
-import { NAV } from "./nav";
+import { navFor } from "./nav";
 import { STATUS_LABEL } from "../model/status";
 import { StatusGlyph, Kbd } from "./primitives";
 import type { AgentStatus } from "../model/types";
@@ -36,14 +36,16 @@ export function CommandPalette() {
       f();
     };
     const out: Cmd[] = [
-      ...NAV.map((n) => ({
+      ...navFor({ hasHistory: s.data.history.length > 0 }).map((n) => ({
         id: `go-${n.view}`,
         group: "Navigate",
         label: `Go to ${n.label}`,
         shortcut: `⌘${n.key}`,
         run: act(() => s.go(n.view as View)),
       })),
-      { id: "go-system", group: "Navigate", label: "Go to Design System", run: act(() => s.go("system")) },
+      ...(s.source === "sample"
+        ? [{ id: "go-system", group: "Navigate", label: "Go to Design System", run: act(() => s.go("system")) }]
+        : []),
       {
         id: "mode-tree",
         group: "Explorer",

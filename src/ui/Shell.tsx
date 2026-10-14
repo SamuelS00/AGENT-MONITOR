@@ -3,7 +3,7 @@ import { useStore } from "../app/storeContext";
 import { isActive } from "../model/status";
 import { fmtAgo } from "../model/format";
 import { AppMark } from "./AppMark";
-import { NAV } from "./nav";
+import { navFor } from "./nav";
 import { Kbd, Resizer } from "./primitives";
 
 export function Sidebar() {
@@ -19,7 +19,7 @@ export function Sidebar() {
         </div>
       </div>
       <nav className="nav" aria-label="Views">
-        {NAV.map(({ view: v, label, icon: Icon, key }) => (
+        {navFor({ hasHistory: data.history.length > 0 }).map(({ view: v, label, icon: Icon, key }) => (
           <button
             key={v}
             className={`nav-item ${view === v ? "on" : ""}`}
@@ -64,14 +64,16 @@ export function Sidebar() {
         {data.projects.length === 0 && <div className="side-empty">No projects observed</div>}
       </div>
       <div className="side-foot">
-        <button
-          className="nav-item"
-          onClick={() => go("system")}
-          aria-current={view === "system" ? "page" : undefined}
-          title="Design system reference"
-        >
-          <span className="grow trunc">Design System</span>
-        </button>
+        {source === "sample" && (
+          <button
+            className="nav-item"
+            onClick={() => go("system")}
+            aria-current={view === "system" ? "page" : undefined}
+            title="Design system reference"
+          >
+            <span className="grow trunc">Design System</span>
+          </button>
+        )}
         <div className="collector" role="status">
           <span className={`dot ${loading ? "busy" : source === "sample" ? "sample" : "live"}`} aria-hidden />
           <span className="trunc">
@@ -98,7 +100,7 @@ export function Toolbar() {
     setSource,
     canLive,
   } = useStore();
-  const title = view === "system" ? "Design System" : NAV.find((n) => n.view === view)?.label;
+  const title = view === "system" ? "Design System" : navFor({ hasHistory: true }).find((n) => n.view === view)?.label;
   return (
     <div className="toolbar" data-tauri-drag-region>
       {!sidebarOpen && <div className="traffic-space" data-tauri-drag-region />}

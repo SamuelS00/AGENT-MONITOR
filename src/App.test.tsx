@@ -118,6 +118,46 @@ describe("App (orchestration)", () => {
   });
 });
 
+describe("App (navigation)", () => {
+  const views = () => within(screen.getByRole("navigation", { name: "Views" }));
+
+  it("offers only screens that can show something when live", async () => {
+    loadMock.mockResolvedValue(fixtureSnapshot);
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+
+    // No stored history is exposed yet, and the design reference is a sample-mode aid.
+    expect(views().queryByRole("button", { name: /History/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Design System" })).not.toBeInTheDocument();
+    expect(
+      views()
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Monitor⌘1", "Execution Explorer⌘2", "Timeline⌘3", "Settings⌘4"]);
+  });
+
+  it("numbers the shortcuts by what is visible", async () => {
+    loadMock.mockResolvedValue(fixtureSnapshot);
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+
+    fireEvent.keyDown(window, { key: "4", metaKey: true });
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("has no switches that look like options but do nothing", async () => {
+    loadMock.mockResolvedValue(fixtureSnapshot);
+    render(<App />);
+    await screen.findByText("Fixture agent run");
+    fireEvent.click(views().getByRole("button", { name: /Settings/ }));
+    await screen.findByRole("heading", { level: 1, name: "Settings" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Data & privacy" }));
+    expect(await screen.findByText("Prompts and responses")).toBeInTheDocument();
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+  });
+});
+
 describe("App (sample source)", () => {
   it("labels preview data as sample data outside Tauri", async () => {
     inTauriMock.mockReturnValue(false);
@@ -126,5 +166,8 @@ describe("App (sample source)", () => {
     // The sample dataset must always be identifiable as fictional.
     const labels = await screen.findAllByText(/Sample data/);
     expect(labels.length).toBeGreaterThan(0);
+    // Sample data has history and is where the design reference is useful.
+    expect(screen.getByRole("button", { name: /History/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Design System" })).toBeInTheDocument();
   });
 });
