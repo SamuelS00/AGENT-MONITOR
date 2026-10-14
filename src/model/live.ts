@@ -3,6 +3,9 @@ import type { AgentNode, Dataset, DetectedTool, Metric, Project, Session } from 
 import { unavailable } from "./format";
 import { buildIndex } from "./tree";
 
+/** Servers that host sessions of many projects (Codex app-server, OpenCode serve) are grouped apart from projects. */
+const SERVICES_PROJECT: Project = { id: "services", name: "Background services" };
+
 const baseName = (p?: string) => p?.split("/").filter(Boolean).pop();
 
 /** Adapter from the collector's domain contract to the UI model. No inference beyond what the collector states. */
@@ -59,9 +62,10 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
   });
   const idx = buildIndex(nodes);
   const projectFor = (n: AgentNode): Project => {
-    const proc = procById.get(byId.get(n.id)?.processId ?? "");
-    const path = proc?.projectPath;
-    return path && path !== "/" ? { id: path, name: baseName(path) ?? path, path } : { id: "unknown", name: "Unknown project" };
+    const exec = byId.get(n.id);
+    if (exec?.role === "service") return SERVICES_PROJECT;
+    const path = exec?.projectPath ?? procById.get(exec?.processId ?? "")?.projectPath;
+    return path && path !== "/" ? { id: path, name: baseName(path) ?? path, path } : { id: "unknown", name: "No working directory" };
   };
   const projects = new Map<string, Project>();
   // A process is the unit of observation for live work. Some adapters can emit
@@ -86,11 +90,20 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
     projects.set(p.id, p);
     return { id: r.id, projectId: p.id, title: r.label, rootId: r.id };
   });
-  const tools: DetectedTool[] = [...new Set(s.processes.map((p) => p.tool))].map((name) => ({
-    name,
-    capabilities: { process: "confirmed", transcript: "unavailable", usage: "unavailable", hierarchy: "unavailable" },
-    note: "Process discovery only.",
-  }));
+  const tools: DetectedTool[] = [...new Set([...s.processes.map((p) => p.tool), ...s.executions.map((e) => e.tool)])].map((name) => {
+    const mine = s.executions.filter((e) => e.tool === name);
+    const hasUsage = mine.some((e) => e.tokens != null);
+    return {
+      name,
+      capabilities: {
+        process: s.processes.some((p) => p.tool === name) ? "confirmed" : "unavailable",
+        transcript: hasUsage ? "confirmed" : "unavailable",
+        usage: hasUsage ? "confirmed" : "unavailable",
+        hierarchy: "unavailable",
+      },
+      note: hasUsage ? "Process discovery and session usage." : "Process discovery only.",
+    };
+  });
   return {
     kind: "live",
     observedAt: Date.parse(s.observedAt) || Date.now(),

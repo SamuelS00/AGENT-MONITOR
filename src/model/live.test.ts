@@ -95,4 +95,56 @@ describe("datasetFromSnapshot", () => {
     const dataset = datasetFromSnapshot(fixtureSnapshot([], [], "fixture: collector offline"));
     expect(dataset.collectorError).toBe("fixture: collector offline");
   });
+
+  it("groups services apart from projects and uses the project recorded by the session", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot([
+        {
+          id: "fixture-execution:svc",
+          processId: fixtureProcess.id,
+          role: "service",
+          label: "Codex server",
+          tool: "Codex",
+          status: "running",
+          relationship: "confirmed",
+        },
+        {
+          id: "fixture-execution:s1",
+          role: "session",
+          projectPath: "/fixture/other",
+          label: "other",
+          tool: "Codex",
+          status: "unknown",
+          relationship: "unavailable",
+        },
+        { id: "fixture-execution:s2", label: "orphan", tool: "Codex", status: "unknown", relationship: "unavailable" },
+      ]),
+    );
+    const projectOf = (id: string) => dataset.sessions.find((s) => s.id === id)?.projectId;
+    expect(projectOf("fixture-execution:svc")).toBe("services");
+    expect(projectOf("fixture-execution:s1")).toBe("/fixture/other");
+    expect(projectOf("fixture-execution:s2")).toBe("unknown");
+    expect(dataset.projects.find((p) => p.id === "unknown")?.name).toBe("No working directory");
+  });
+
+  it("reports usage capability only when a session actually has usage", () => {
+    const withUsage = datasetFromSnapshot(
+      fixtureSnapshot([
+        {
+          id: "fixture-execution:u",
+          label: "u",
+          tool: "Codex",
+          status: "running",
+          relationship: "confirmed",
+          tokens: 5,
+          usageReliability: "confirmed",
+        },
+      ]),
+    );
+    expect(withUsage.tools[0].capabilities.usage).toBe("confirmed");
+    const without = datasetFromSnapshot(
+      fixtureSnapshot([{ id: "fixture-execution:n", label: "n", tool: "Codex", status: "running", relationship: "confirmed" }]),
+    );
+    expect(without.tools[0].capabilities.usage).toBe("unavailable");
+  });
 });

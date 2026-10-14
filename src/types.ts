@@ -16,6 +16,10 @@ export interface ExecutionNode {
   id: string;
   parentId?: string;
   processId?: string;
+  /** `service` is a background server that hosts sessions; it never owns a project. */
+  role?: "session" | "service";
+  /** Working directory the tool recorded for this session, when known. */
+  projectPath?: string;
   label: string;
   tool: string;
   model?: string;
