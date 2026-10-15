@@ -41,7 +41,8 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
       sessionId: rootOf(e),
       label: e.label,
       activity: e.task,
-      role: e.level ?? (e.parentId ? "agent" : "orchestrator"),
+      // A node with no recorded level is a plain session (or its child), never an orchestrator.
+      role: e.level ?? (e.parentId ? "subagent" : "agent"),
       level: e.level,
       tool: e.tool,
       model: metric(e.model, e.modelReliability ?? (e.model ? "confirmed" : "unavailable"), usageSource),

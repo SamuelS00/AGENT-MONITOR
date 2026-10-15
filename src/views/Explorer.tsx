@@ -5,7 +5,8 @@ import { ModelBadge } from "../ui/ModelBadge";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, ListTree } from "lucide-react";
 import { useStore } from "../app/storeContext";
 import { descendants, durationMs, parallelIds, rollupTokens, visibleRows, type Row } from "../model/tree";
-import { fmtDuration, fmtTokens } from "../model/format";
+import { attempts, describe, isOrchestration, isSuperseded, lastActive, summarize } from "../model/orchestration";
+import { fmtAgo, fmtDuration, fmtTokens } from "../model/format";
 import { Banner, EmptyState, Segmented, SkeletonRows, StatusGlyph, Val } from "../ui/primitives";
 import { copy } from "../ui/clipboard";
 import { useMenu } from "../ui/useMenu";
@@ -13,38 +14,57 @@ import { useMenu } from "../ui/useMenu";
 const Graph = lazy(() => import("./Graph"));
 
 export function SessionPicker() {
-  const { data, index, sessionId, setSessionId, select } = useStore();
+  const { data, index, sessionId, setSessionId, select, now } = useStore();
   const menu = useMenu();
   const cur = data.sessions.find((s) => s.id === sessionId);
   const proj = data.projects.find((p) => p.id === cur?.projectId);
+  const curRoot = cur ? index.byId.get(cur.rootId) : undefined;
+
+  // Orchestrations first: they are what this view is for. Plain sessions follow, so a one-row session is never
+  // mistaken for an orchestration. Every entry says what it is, so entries from one project are told apart.
+  const entries = data.sessions
+    .filter((s) => s.projectId !== "services" || s.id === sessionId)
+    .map((s) => ({ s, root: index.byId.get(s.rootId) }))
+    .filter((e): e is { s: (typeof data.sessions)[number]; root: NonNullable<typeof e.root> } => !!e.root)
+    .map((e) => ({ ...e, active: lastActive(index, e.s.rootId, now), orchestration: isOrchestration(e.root) }))
+    .sort((a, b) => b.active - a.active);
+  const baseLabel = (e: (typeof entries)[number]) => {
+    const project = data.projects.find((p) => p.id === e.s.projectId)?.name ?? "No project";
+    const what = e.orchestration ? describe(summarize(index, e.s.rootId)) : "";
+    const named = e.root.activity ?? e.root.label;
+    return [project, e.root.tool, e.orchestration ? what : named, fmtAgo(e.active, now)].filter(Boolean).join(" · ");
+  };
+  // Two sessions that read the same get a short id, so no two entries are identical.
+  const labels = entries.map(baseLabel);
+  const item = (e: (typeof entries)[number]) => {
+    const base = baseLabel(e);
+    const twin = labels.filter((l) => l === base).length > 1;
+    return {
+      label: twin ? `${base} · #${e.root.id.slice(-4)}` : base,
+      checked: e.s.id === sessionId,
+      onSelect: () => {
+        setSessionId(e.s.id);
+        select(e.s.rootId);
+      },
+    };
+  };
+  const orchestrations = entries.filter((e) => e.orchestration);
+  const plain = entries.filter((e) => !e.orchestration);
+  const items = [
+    ...(orchestrations.length ? [{ label: "Orchestrations", disabled: true }, ...orchestrations.map(item)] : []),
+    ...(orchestrations.length && plain.length ? [{ separator: true, label: "" }] : []),
+    ...(plain.length ? [{ label: "Sessions", disabled: true }, ...plain.map(item)] : []),
+  ];
   return (
     <>
-      <button
-        className="picker"
-        disabled={!cur}
-        onClick={(e) =>
-          menu.openAt(
-            e.currentTarget,
-            data.sessions
-              .filter((s) => s.projectId !== "services" || s.id === sessionId)
-              .map((s) => ({
-                label: `${data.projects.find((p) => p.id === s.projectId)?.name ?? "unknown"} · ${s.title}`,
-                checked: s.id === sessionId,
-                onSelect: () => {
-                  setSessionId(s.id);
-                  select(s.rootId);
-                },
-              })),
-          )
-        }
-        aria-haspopup="menu"
-      >
-        {cur ? (
+      <button className="picker" disabled={!cur} onClick={(e) => menu.openAt(e.currentTarget, items)} aria-haspopup="menu">
+        {cur && curRoot ? (
           <>
-            <StatusGlyph status={index.byId.get(cur.rootId)?.status ?? "unknown"} />
+            <StatusGlyph status={curRoot.status} />
+            {isOrchestration(curRoot) && <span className="tag tag-role">Orchestration</span>}
             <span className="picker-proj">{proj?.name}</span>
             <span className="picker-sep">/</span>
-            <span className="trunc">{cur.title}</span>
+            <span className="trunc">{isOrchestration(curRoot) ? (curRoot.activity ?? curRoot.tool) : cur.title}</span>
           </>
         ) : (
           <span>No session</span>
@@ -53,6 +73,38 @@ export function SessionPicker() {
       </button>
       {menu.node}
     </>
+  );
+}
+
+const OUTCOME: Record<ReturnType<typeof summarize>["outcome"], string> = {
+  running: "Running",
+  "needs-input": "Needs input",
+  failed: "Failed",
+  finished: "Finished",
+};
+
+/** What the orchestration is and how it went, above its tree. */
+function OrchestrationSummary({ rootId }: { rootId: string }) {
+  const { index, now } = useStore();
+  const root = index.byId.get(rootId);
+  if (!root || !isOrchestration(root)) return null;
+  const s = summarize(index, rootId);
+  const dur = durationMs(root, now);
+  return (
+    <div className="orch-summary" role="group" aria-label="Orchestration summary">
+      <span className={`orch-outcome orch-${s.outcome}`}>{OUTCOME[s.outcome]}</span>
+      <span className="orch-meta">
+        {ROLE_LABEL[root.level ?? "meta"]} <ModelBadge node={root} compact />
+      </span>
+      <span className="orch-counts">{describe(s) || "No delegated work recorded"}</span>
+      <span className="grow" />
+      <span className="mono">
+        <Val m={s.tokens.tokens} fmt={fmtTokens} lowerBound={s.tokens.partial && s.tokens.tokens.reliability !== "unavailable"} /> tokens
+      </span>
+      <span className="mono">
+        <Val m={dur} fmt={fmtDuration} />
+      </span>
+    </div>
   );
 }
 
@@ -124,6 +176,7 @@ export function Explorer() {
   return (
     <div className="view">
       <ExplorerBar />
+      {rootId && <OrchestrationSummary rootId={rootId} />}
       {data.collectorError && <Banner tone="error">Collector error: {data.collectorError}</Banner>}
       {!rootId ? (
         loading ? (
@@ -158,6 +211,7 @@ export function Explorer() {
 function Tree({ rootId }: { rootId: string }) {
   const { index, expanded, toggle, selectedId, select, now, setExpanded } = useStore();
   const rows = useMemo(() => visibleRows(index, rootId, expanded), [index, rootId, expanded]);
+  const tries = useMemo(() => attempts(index, rootId), [index, rootId]);
   const par = useMemo(() => {
     const m = new Map<string, Set<string>>();
     index.children.forEach((kids, pid) => m.set(pid, parallelIds(kids, now)));
@@ -304,7 +358,19 @@ function Tree({ rootId }: { rootId: string }) {
                   {runningKids} parallel
                 </span>
               )}
-              {n.relationship !== "confirmed" && (
+              {tries.get(n.id) && (
+                <span
+                  className={`tag ${isSuperseded(tries.get(n.id)) ? "tag-retried" : ""}`}
+                  title={
+                    isSuperseded(tries.get(n.id))
+                      ? "A later try of the same task replaced this one"
+                      : "Started again after an earlier try of the same task"
+                  }
+                >
+                  try {tries.get(n.id)!.attempt} of {tries.get(n.id)!.of}
+                </span>
+              )}
+              {n.parentId && n.relationship !== "confirmed" && (
                 <span className="tag tag-inf" title={n.relationshipNote ?? "Relationship not confirmed"}>
                   inferred
                 </span>

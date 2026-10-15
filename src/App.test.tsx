@@ -209,6 +209,113 @@ describe("App (navigation)", () => {
   });
 });
 
+describe("App (orchestration explorer)", () => {
+  const meta: ExecutionNode = {
+    ...fixtureExecution,
+    id: "fixture-execution:meta",
+    processId: undefined,
+    level: "meta",
+    label: "fixture-project",
+    task: "Fixture orchestration",
+    status: "idle",
+  };
+  const worker = (id: string, label: string, status: ExecutionNode["status"], startedAt: string): ExecutionNode => ({
+    ...fixtureExecution,
+    id,
+    processId: undefined,
+    parentId: meta.id,
+    tool: "Orca",
+    level: "agent",
+    label,
+    status,
+    startedAt,
+  });
+  const orchestration: MonitorSnapshot = {
+    ...fixtureSnapshot,
+    executions: [
+      meta,
+      worker("fixture-execution:try1", "Fixture task", "failed", "2026-01-01T00:00:01.000Z"),
+      worker("fixture-execution:try2", "Fixture task", "completed", "2026-01-01T00:00:02.000Z"),
+      // A plain session that happens to live in the same project.
+      { ...fixtureExecution, id: "fixture-execution:plain", processId: undefined, label: "fixture-project", status: "idle" },
+    ],
+  };
+  const open = async () => {
+    loadMock.mockResolvedValue(orchestration);
+    render(<App />);
+    await screen.findByText("Fixture orchestration");
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Execution Explorer/ }));
+    return screen.findByRole("group", { name: "Orchestration summary" });
+  };
+
+  it("summarizes the orchestration above its tree, counting a retried failure apart from an open one", async () => {
+    const summary = await open();
+    expect(within(summary).getByText("Finished")).toBeInTheDocument();
+    expect(within(summary).getByText("Meta-orchestrator", { exact: false })).toBeInTheDocument();
+    expect(within(summary).getByText(/2 agents · 1 retry/)).toBeInTheDocument();
+    expect(within(summary).queryByText(/failed/)).not.toBeInTheDocument();
+  });
+
+  it("marks each try of a retried task", async () => {
+    await open();
+    expect(await screen.findByText("try 1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("try 2 of 2")).toBeInTheDocument();
+  });
+
+  it("lists orchestrations apart from plain sessions, each entry saying what it is", async () => {
+    await open();
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".picker")!);
+    const menu = await screen.findByRole("menu");
+    const labels = within(menu)
+      .getAllByRole("menuitem")
+      .map((i) => i.textContent ?? "");
+    expect(labels[0]).toMatch(/^Orchestrations/);
+    expect(labels.findIndex((l) => l.startsWith("Sessions"))).toBeGreaterThan(1);
+    // The orchestration says how many agents and retries it has; the plain session does not pose as one.
+    expect(labels.find((l) => l.includes("2 agents"))).toBeTruthy();
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("tells apart plain sessions that would read the same", async () => {
+    const twin = (id: string): ExecutionNode => ({
+      ...fixtureExecution,
+      id,
+      processId: undefined,
+      label: "fixture-project",
+      status: "idle",
+    });
+    loadMock.mockResolvedValue({
+      ...fixtureSnapshot,
+      executions: [twin("fixture-execution:aaaa1111"), twin("fixture-execution:bbbb2222")],
+    });
+    render(<App />);
+    await screen.findAllByText("fixture-project");
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Execution Explorer/ }));
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".picker")!);
+    const menu = await screen.findByRole("menu");
+    const labels = within(menu)
+      .getAllByRole("menuitem")
+      .map((i) => i.textContent ?? "")
+      .filter((l) => !/^(Orchestrations|Sessions)/.test(l));
+    expect(labels).toHaveLength(2);
+    expect(new Set(labels).size).toBe(2);
+    expect(labels.some((l) => l.endsWith("#1111"))).toBe(true);
+    expect(labels.some((l) => l.endsWith("#2222"))).toBe(true);
+  });
+
+  it("does not call a plain session an orchestrator or mark its root as inferred", async () => {
+    await open();
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".picker")!);
+    const menu = await screen.findByRole("menu");
+    const plain = within(menu)
+      .getAllByRole("menuitem")
+      .find((i) => !/^(Orchestrations|Sessions)/.test(i.textContent ?? "") && !(i.textContent ?? "").includes("agents"))!;
+    fireEvent.click(plain);
+    expect(screen.queryByText("Orchestrator")).not.toBeInTheDocument();
+    expect(screen.queryByText("inferred")).not.toBeInTheDocument();
+  });
+});
+
 describe("App (sample source)", () => {
   it("labels preview data as sample data outside Tauri", async () => {
     inTauriMock.mockReturnValue(false);

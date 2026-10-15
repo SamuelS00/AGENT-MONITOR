@@ -87,7 +87,7 @@ describe("datasetFromSnapshot", () => {
       ]),
     );
     expect(dataset.nodes[1].sessionId).toBe("fixture-execution:root");
-    expect(dataset.nodes[1].role).toBe("agent");
+    expect(dataset.nodes[1].role).toBe("subagent");
     expect(dataset.sessions.map((s) => s.id)).toEqual(["fixture-execution:root"]);
   });
 
@@ -172,7 +172,7 @@ describe("datasetFromSnapshot", () => {
     );
     expect(dataset.sessions).toHaveLength(1);
     const byId = new Map(dataset.nodes.map((n) => [n.id, n]));
-    expect(byId.get("fixture-execution:sub")?.role).toBe("agent");
+    expect(byId.get("fixture-execution:sub")?.role).toBe("subagent");
     expect(byId.get("fixture-execution:sub")?.status).toBe("inactive");
     expect(byId.get("fixture-execution:sub")?.relationshipNote).toBeUndefined();
     expect(byId.get("fixture-execution:deep")?.relationshipNote).toContain("not confirmed");

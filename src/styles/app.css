@@ -1959,3 +1959,45 @@ select.field {
   flex: none;
   border-radius: 5px;
 }
+
+/* Orchestration summary above the Explorer tree. */
+.orch-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--surface-raised);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.orch-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.orch-outcome {
+  font-weight: 600;
+  padding: 1px var(--sp-3);
+  border-radius: 10px;
+  border: 1px solid var(--line-default);
+}
+.orch-running {
+  color: var(--status-running);
+  border-color: var(--status-running);
+}
+.orch-needs-input {
+  color: var(--status-waiting);
+  border-color: var(--status-waiting);
+}
+.orch-failed {
+  color: var(--status-failed);
+  border-color: var(--status-failed);
+}
+.orch-finished {
+  color: var(--text-secondary);
+}
+.tag-retried {
+  opacity: 0.7;
+}
