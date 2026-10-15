@@ -1,6 +1,6 @@
 // Tests for the orchestration view model. Every node is a synthetic fixture (ids prefixed "fixture-").
 import { describe, expect, it } from "vitest";
-import { attempts, describe as describeSummary, isOrchestration, isSuperseded, summarize } from "./orchestration";
+import { attempts, describe as describeSummary, isOrchestration, isSuperseded, lastActive, modelsUsed, summarize } from "./orchestration";
 import { buildIndex } from "./tree";
 import { confirmed, unavailable } from "./format";
 import type { AgentNode } from "./types";
@@ -129,5 +129,37 @@ describe("summarize", () => {
       node({ id: "fixture-w", parentId: "fixture-root", label: "Worker", level: "agent", status: "running" }),
     ]);
     expect(summarize(index, "fixture-root").outcome).toBe("running");
+  });
+});
+
+describe("overview tree models and activity", () => {
+  it("deduplicates models across the full tree and preserves provenance and unknowns", () => {
+    const root = node({ id: "fixture-root", label: "Meta", level: "meta", model: confirmed("gpt-6", "fixture root") });
+    const unknown = node({ id: "fixture-unknown", parentId: root.id, label: "Missing" });
+    const other = node({ id: "fixture-other", parentId: unknown.id, label: "Other", model: confirmed("opus", "fixture child") });
+    const index = buildIndex([
+      root,
+      unknown,
+      other,
+      node({ id: "fixture-duplicate", parentId: root.id, label: "Duplicate", model: confirmed("gpt-6") }),
+      node({ id: "fixture-missing", parentId: root.id, label: "Missing too" }),
+      node({ id: "fixture-unrelated", label: "Separate", model: confirmed("unrelated") }),
+    ]);
+    const models = modelsUsed(index, root.id);
+    expect(models).toHaveLength(3);
+    expect(models).toContain(root);
+    expect(models).toContain(other);
+    expect(models.filter((n) => n.model.reliability === "unavailable")).toHaveLength(1);
+    expect(modelsUsed(index, "absent")).toEqual([]);
+  });
+
+  it("finds activity in descendants, falls back to starts and leaves absent activity unknown", () => {
+    const index = buildIndex([
+      node({ id: "fixture-root", label: "Meta", startedAt: 10 }),
+      node({ id: "fixture-child", parentId: "fixture-root", label: "Child", startedAt: 20, lastActivityAt: 80 }),
+      node({ id: "fixture-unknown", label: "Unknown" }),
+    ]);
+    expect(lastActive(index, "fixture-root", 100)).toBe(80);
+    expect(lastActive(index, "fixture-unknown", 100)).toBe(0);
   });
 });

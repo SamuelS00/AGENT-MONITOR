@@ -1,3 +1,4 @@
+import { isOrchestration } from "../model/orchestration";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { View } from "../app/store";
 import { useStore } from "../app/storeContext";
@@ -36,7 +37,7 @@ export function CommandPalette() {
       f();
     };
     const out: Cmd[] = [
-      ...navFor({ hasHistory: s.data.history.length > 0 }).map((n) => ({
+      ...navFor({ hasOrchestrations: s.index.roots.some(isOrchestration), hasHistory: s.data.history.length > 0 }).map((n) => ({
         id: `go-${n.view}`,
         group: "Navigate",
         label: `Go to ${n.label}`,

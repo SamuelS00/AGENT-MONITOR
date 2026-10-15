@@ -1,3 +1,4 @@
+import { isOrchestration } from "../model/orchestration";
 import { PanelLeft, PanelRight, RefreshCw, Search } from "lucide-react";
 import { useStore } from "../app/storeContext";
 import { isActive } from "../model/status";
@@ -19,18 +20,20 @@ export function Sidebar() {
         </div>
       </div>
       <nav className="nav" aria-label="Views">
-        {navFor({ hasHistory: data.history.length > 0 }).map(({ view: v, label, icon: Icon, key }) => (
-          <button
-            key={v}
-            className={`nav-item ${view === v ? "on" : ""}`}
-            aria-current={view === v ? "page" : undefined}
-            onClick={() => go(v)}
-          >
-            <Icon size={15} strokeWidth={1.6} />
-            <span className="grow trunc">{label}</span>
-            <Kbd>⌘{key}</Kbd>
-          </button>
-        ))}
+        {navFor({ hasOrchestrations: index.roots.some(isOrchestration), hasHistory: data.history.length > 0 }).map(
+          ({ view: v, label, icon: Icon, key }) => (
+            <button
+              key={v}
+              className={`nav-item ${view === v ? "on" : ""}`}
+              aria-current={view === v ? "page" : undefined}
+              onClick={() => go(v)}
+            >
+              <Icon size={15} strokeWidth={1.6} />
+              <span className="grow trunc">{label}</span>
+              <Kbd>⌘{key}</Kbd>
+            </button>
+          ),
+        )}
       </nav>
       <div className="side-head">Projects</div>
       <div className="nav side-projects">
@@ -100,7 +103,8 @@ export function Toolbar() {
     setSource,
     canLive,
   } = useStore();
-  const title = view === "system" ? "Design System" : navFor({ hasHistory: true }).find((n) => n.view === view)?.label;
+  const title =
+    view === "system" ? "Design System" : navFor({ hasOrchestrations: true, hasHistory: true }).find((n) => n.view === view)?.label;
   return (
     <div className="toolbar" data-tauri-drag-region>
       {!sidebarOpen && <div className="traffic-space" data-tauri-drag-region />}

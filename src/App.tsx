@@ -8,12 +8,15 @@ import { navFor, viewAvailable } from "./ui/nav";
 import { Sidebar, Toolbar } from "./ui/Shell";
 import { Explorer } from "./views/Explorer";
 import { History } from "./views/History";
+import { isOrchestration } from "./model/orchestration";
+import { Overview } from "./views/Overview";
 import { Monitor } from "./views/Monitor";
 import { Settings } from "./views/Settings";
 import { System } from "./views/System";
 import { Timeline } from "./views/Timeline";
 
 const VIEWS: Record<View, () => React.JSX.Element> = {
+  overview: Overview,
   monitor: Monitor,
   explorer: Explorer,
   timeline: Timeline,
@@ -39,16 +42,17 @@ function Shell() {
     refresh,
   } = s;
 
+  const hasOrchestrations = s.index.roots.some(isOrchestration);
   const hasHistory = s.data.history.length > 0;
   const sample = s.source === "sample";
-  const available = viewAvailable(view, { hasHistory, sample });
+  const available = viewAvailable(view, { hasOrchestrations, hasHistory, sample });
   // A view that disappeared (history without data, the design reference outside sample mode) falls back to Monitor.
   useEffect(() => {
     if (!available) go("monitor");
   }, [available, go]);
 
   useEffect(() => {
-    const nav = navFor({ hasHistory });
+    const nav = navFor({ hasOrchestrations, hasHistory });
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const k = e.key.toLowerCase();
@@ -71,7 +75,18 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, hasHistory, inspectorOpen, sidebarOpen, paletteOpen, setInspectorOpen, setSidebarOpen, setPaletteOpen, refresh]);
+  }, [
+    go,
+    hasOrchestrations,
+    hasHistory,
+    inspectorOpen,
+    sidebarOpen,
+    paletteOpen,
+    setInspectorOpen,
+    setSidebarOpen,
+    setPaletteOpen,
+    refresh,
+  ]);
 
   const Active = VIEWS[available ? view : "monitor"];
   const showInspector = inspectorOpen && !NO_INSPECTOR.includes(view);

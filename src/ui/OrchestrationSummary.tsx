@@ -13,6 +13,10 @@ const OUTCOME: Record<ReturnType<typeof summarize>["outcome"], string> = {
   finished: "Finished",
 };
 
+export function OutcomeChip({ outcome }: { outcome: ReturnType<typeof summarize>["outcome"] }) {
+  return <span className={`orch-outcome orch-${outcome}`}>{OUTCOME[outcome]}</span>;
+}
+
 /** What the orchestration is and how it went, above its tree. */
 export function OrchestrationSummary({ rootId }: { rootId: string }) {
   const { index, now } = useStore();
@@ -23,7 +27,7 @@ export function OrchestrationSummary({ rootId }: { rootId: string }) {
   const dur = durationMs(root, now);
   return (
     <div className="orch-summary" role="group" aria-label="Orchestration summary">
-      <span className={`orch-outcome orch-${s.outcome}`}>{OUTCOME[s.outcome]}</span>
+      <OutcomeChip outcome={s.outcome} />
       <span className="orch-meta">
         {ROLE_LABEL[root.level ?? "meta"]} <ModelBadge node={root} compact />
       </span>

@@ -1,6 +1,6 @@
 import type { AgentNode, Metric } from "./types";
 import { confirmed, estimated, unavailable } from "./format";
-import { descendants, endOf, isLive, rollupTokens, type TreeIndex } from "./tree";
+import { descendants, isLive, rollupTokens, type TreeIndex } from "./tree";
 
 export interface ModelTokenSummary {
   modelId: string;
@@ -160,5 +160,19 @@ export function describe(s: OrchestrationSummary): string {
 /** When a session last did anything: the latest recorded activity in its tree, else its start. */
 export function lastActive(index: TreeIndex, rootId: string, now: number): number {
   const nodes = [index.byId.get(rootId), ...descendants(index, rootId)].filter((n): n is AgentNode => !!n);
-  return Math.max(0, ...nodes.map((n) => endOf(n, now) ?? n.startedAt ?? 0));
+  return Math.min(now, Math.max(0, ...nodes.flatMap((n) => [n.endedAt ?? 0, n.lastActivityAt ?? 0, n.startedAt ?? 0])));
+}
+
+/** One representative per recorded model in this tree, retaining the model metric's provenance.
+ * Missing models remain a single unavailable entry rather than an invented model. */
+export function modelsUsed(index: TreeIndex, rootId: string): AgentNode[] {
+  const root = index.byId.get(rootId);
+  if (!root) return [];
+  const seen = new Set<string | undefined>();
+  return [root, ...descendants(index, rootId)].filter((n) => {
+    const model = n.model.reliability === "unavailable" ? undefined : n.model.value;
+    if (seen.has(model)) return false;
+    seen.add(model);
+    return true;
+  });
 }

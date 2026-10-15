@@ -248,6 +248,66 @@ describe("App (orchestration explorer)", () => {
     return screen.findByRole("group", { name: "Orchestration summary" });
   };
 
+  it("lists only orchestration roots and opens each through click or Enter", async () => {
+    const other = { ...meta, id: "fixture-execution:other", task: "Other orchestration", tool: "Orca" };
+    loadMock.mockResolvedValue({ ...orchestration, executions: [...orchestration.executions, other] });
+    render(<App />);
+    const views = within(screen.getByRole("navigation", { name: "Views" }));
+    const overview = await views.findByRole("button", { name: /Overview/ });
+    expect(views.getAllByRole("button")[0]).toBe(overview);
+    expect(overview).toHaveTextContent("Overview⌘1");
+    fireEvent.click(overview);
+    const table = await screen.findByRole("table", { name: "Orchestrations" });
+    expect(within(table).getAllByRole("row")).toHaveLength(3);
+    expect(within(table).queryByText("Fixture task")).not.toBeInTheDocument();
+    expect(within(table).getByText("2 agents · 1 retry")).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole("row", { name: "Open Other orchestration in Execution Explorer" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Execution Explorer" })).toBeInTheDocument();
+    expect(document.querySelector(".picker")).toHaveTextContent("Other orchestration");
+    fireEvent.keyDown(window, { key: "1", metaKey: true });
+    const row = await screen.findByRole("row", { name: "Open Fixture orchestration in Execution Explorer" });
+    row.focus();
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(await screen.findByRole("heading", { level: 1, name: "Execution Explorer" })).toBeInTheDocument();
+    expect(document.querySelector(".picker")).toHaveTextContent("Fixture orchestration");
+  });
+
+  it("shows distinct tree models, partial tokens and unavailable metrics", async () => {
+    const executions = orchestration.executions.map((n, i) => ({
+      ...n,
+      startedAt: undefined,
+      model: i < 2 ? "gpt-6" : "claude-opus-4-6",
+      tokens: i === 1 ? 120 : undefined,
+      usageSource: "fixture usage",
+    }));
+    loadMock.mockResolvedValue({ ...orchestration, executions });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Overview/ }));
+    const row = await screen.findByRole("row", { name: "Open Fixture orchestration in Execution Explorer" });
+    const cells = within(row).getAllByRole("cell");
+    expect(cells[2]).toHaveTextContent("Codex");
+    expect(cells[3].querySelectorAll(".mbadge")).toHaveLength(2);
+    expect(cells[3].querySelector(".mbadge")).toHaveAttribute("title", expect.stringContaining("fixture usage"));
+    expect(cells[5]).toHaveTextContent("≥120");
+    expect(within(cells[6]).getByLabelText("Unavailable")).toBeInTheDocument();
+    expect(within(cells[7]).getByLabelText("Unavailable")).toBeInTheDocument();
+  });
+
+  it("offers Overview in the palette and falls back when orchestrations disappear", async () => {
+    loadMock.mockResolvedValue(orchestration);
+    refreshMock.mockResolvedValue(fixtureSnapshot);
+    render(<App />);
+    await screen.findByRole("button", { name: /Overview/ });
+    fireEvent.click(screen.getByRole("button", { name: "Open command palette" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Go to Overview/ }));
+    expect(await screen.findByRole("table", { name: "Orchestrations" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Monitor" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Overview/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open command palette" }));
+    expect(screen.queryByRole("option", { name: /Go to Overview/ })).not.toBeInTheDocument();
+  });
+
   it("summarizes the orchestration above its tree, counting a retried failure apart from an open one", async () => {
     const summary = await open();
     expect(within(summary).getByText("Finished")).toBeInTheDocument();

@@ -38,7 +38,7 @@ export function ModelBadge({
   const { name, version } = splitModel(model);
   const effort = node.effort?.reliability !== "unavailable" ? node.effort?.value : undefined;
   const estimated = node.model.reliability === "inferred";
-  const title = `${model}${node.provider?.value ? ` · provider ${node.provider.value}` : ` · ${BRAND_NAME[brand]} (from model name)`}${effort ? ` · effort ${effort}` : ""}${estimated ? " · inferred" : ""}`;
+  const title = `${model}${node.provider?.value ? ` · provider ${node.provider.value}` : ` · ${BRAND_NAME[brand]} (from model name)`}${effort ? ` · effort ${effort}` : ""}${estimated ? " · inferred" : ""}${node.model.source ? ` · ${node.model.source}` : ""}`;
   return (
     <span className={`mbadge ${compact ? "mbadge-compact" : ""}`} style={{ ["--brand" as string]: BRAND_COLOR[brand] }} title={title}>
       <Logo brand={brand} size={compact ? 11 : 12} />

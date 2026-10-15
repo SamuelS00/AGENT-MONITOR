@@ -1,3 +1,4 @@
+import { isOrchestration } from "../model/orchestration";
 import { useState } from "react";
 import { useStore } from "../app/storeContext";
 import { navFor } from "../ui/nav";
@@ -140,11 +141,11 @@ function DataAndPrivacy() {
 }
 
 function Appearance() {
-  const { data, theme, setTheme, density, setDensity, setSidebarW, setInspectorW } = useStore();
+  const { data, index, theme, setTheme, density, setDensity, setSidebarW, setInspectorW } = useStore();
   const hasHistory = data.history.length > 0;
   const keys: [string, string][] = [
     ["⌘K", "Command palette"],
-    [`⌘1–${navFor({ hasHistory }).length}`, "Switch view"],
+    [`⌘1–${navFor({ hasOrchestrations: index.roots.some(isOrchestration), hasHistory }).length}`, "Switch view"],
     ["⌘I", "Toggle inspector"],
     ["⌘\\", "Toggle sidebar"],
     ["⌘R", "Refresh"],

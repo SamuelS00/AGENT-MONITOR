@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import type { Dataset } from "../model/types";
 import type { TreeIndex } from "../model/tree";
 
-export type View = "monitor" | "explorer" | "timeline" | "history" | "settings" | "system";
+export type View = "overview" | "monitor" | "explorer" | "timeline" | "history" | "settings" | "system";
 export type ThemePref = "system" | "light" | "dark";
 export type Density = "regular" | "compact";
 export type ExplorerMode = "tree" | "graph";

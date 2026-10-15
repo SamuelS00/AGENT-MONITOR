@@ -2033,3 +2033,26 @@ select.field {
 .tag-retried {
   opacity: 0.7;
 }
+
+/* Overview keeps all orchestration rollups in one horizontally scrollable table. */
+.overview-table {
+  min-width: 1240px;
+}
+.overview .overview-grid {
+  grid-template-columns: minmax(180px, 1.2fr) 100px 150px minmax(160px, 1fr) minmax(180px, 1fr) 72px 80px 100px;
+}
+.overview-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+}
+.overview .trow {
+  min-height: var(--row-h);
+  height: auto;
+}
+.overview .trow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
