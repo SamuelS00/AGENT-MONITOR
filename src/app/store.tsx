@@ -20,6 +20,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [liveHistory, setLiveHistory] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(() => Date.now());
+  const refreshInFlight = useRef(false);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -34,10 +35,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (refreshInFlight.current) return;
     if (source === "sample") {
       setLastRefresh(Date.now());
       return;
     }
+    refreshInFlight.current = true;
     setLoading(true);
     try {
       setLive(datasetFromSnapshot(await refreshCollector()));
@@ -45,10 +48,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       setLive((d) => ({ ...d, collectorError: String(e) }));
     } finally {
+      refreshInFlight.current = false;
       setLoading(false);
       setLastRefresh(Date.now());
     }
   }, [source, reloadHistory]);
+
+  useEffect(() => {
+    if (!canLive || source !== "live") return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !refreshInFlight.current) void refresh();
+    }, 15_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !refreshInFlight.current) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [canLive, source, refresh]);
 
   useEffect(() => {
     if (source !== "live") return;

@@ -18,6 +18,8 @@ Support dark/light system appearance, progressive disclosure and understandable 
 
 As a developer, I can refresh local observations and inspect a selected execution. Acceptance: unavailable model/tokens visibly read “Unavailable”.
 
+Live observations refresh every 15 seconds while the app is visible; a hidden window pauses scheduled refreshes and refreshes once when it becomes visible again. Sample data is never auto-refreshed.
+
 ## Dependencies
 
 React, Lucide and Tauri commands.
