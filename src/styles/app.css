@@ -1998,6 +1998,38 @@ select.field {
 .orch-finished {
   color: var(--text-secondary);
 }
+.orch-tokens-model {
+  flex-basis: 100%;
+  margin-left: calc(var(--sp-5) + 1px);
+  color: var(--text-secondary);
+}
+.orch-tokens-model summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+.orch-tokens-table-wrap {
+  overflow-x: auto;
+  padding: var(--sp-3) 0;
+}
+.orch-tokens-model table {
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.orch-tokens-model th,
+.orch-tokens-model td {
+  padding: var(--sp-2) var(--sp-4);
+  text-align: right;
+  white-space: nowrap;
+}
+.orch-tokens-model th:first-child,
+.orch-tokens-model td:first-child {
+  text-align: left;
+}
+.orch-tokens-model p {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+}
 .tag-retried {
   opacity: 0.7;
 }

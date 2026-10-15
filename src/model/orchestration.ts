@@ -1,5 +1,60 @@
-import type { AgentNode } from "./types";
+import type { AgentNode, Metric } from "./types";
+import { confirmed, estimated, unavailable } from "./format";
 import { descendants, endOf, isLive, rollupTokens, type TreeIndex } from "./tree";
+
+export interface ModelTokenSummary {
+  modelId: string;
+  nodes: number;
+  tokensIn: Metric<number>;
+  tokensOut: Metric<number>;
+  total: Metric<number>;
+  /** Provenance for the model id itself, retained when multiple nodes share it. */
+  model: Metric<string>;
+}
+
+export interface TokensByModel {
+  models: ModelTokenSummary[];
+  unavailableNodes: number;
+}
+
+/** Sum each node's own usage once. Nodes without a usable model id or total are kept in the unavailable count. */
+export function tokensByModel(index: TreeIndex, rootId: string): TokensByModel {
+  const root = index.byId.get(rootId);
+  const nodes = root ? [root, ...descendants(index, rootId)] : [];
+  const groups = new Map<string, { nodes: AgentNode[] }>();
+  let unavailableNodes = 0;
+  for (const node of nodes) {
+    const modelId = node.model.reliability === "unavailable" ? undefined : node.model.value;
+    if (!modelId || node.tokens.reliability === "unavailable" || node.tokens.value === undefined) {
+      unavailableNodes++;
+      continue;
+    }
+    const group = groups.get(modelId) ?? { nodes: [] };
+    group.nodes.push(node);
+    groups.set(modelId, group);
+  }
+  const sumMetric = (items: AgentNode[], field: "tokensIn" | "tokensOut" | "tokens"): Metric<number> => {
+    const available = items
+      .map((node) => node[field])
+      .filter((metric): metric is Metric<number> => !!metric && metric.reliability !== "unavailable" && metric.value !== undefined);
+    if (!available.length) return unavailable<number>("node usage");
+    const value = available.reduce((sum, metric) => sum + metric.value!, 0);
+    return available.some((metric) => metric.reliability === "inferred") ? estimated(value, "node usage") : confirmed(value, "node usage");
+  };
+  return {
+    models: [...groups].map(([modelId, group]) => ({
+      modelId,
+      nodes: group.nodes.length,
+      model: group.nodes.some((node) => node.model.reliability === "inferred")
+        ? estimated(modelId, "node model")
+        : confirmed(modelId, "node model"),
+      tokensIn: sumMetric(group.nodes, "tokensIn"),
+      tokensOut: sumMetric(group.nodes, "tokensOut"),
+      total: sumMetric(group.nodes, "tokens"),
+    })),
+    unavailableNodes,
+  };
+}
 
 /** An orchestration is a session whose root coordinates others: a meta-orchestrator, or an Orca run with no coordinator
  *  found. Everything else is a plain session, however many subagents it happens to have. */
