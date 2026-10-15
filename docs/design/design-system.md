@@ -98,7 +98,7 @@ Selecting any node anywhere updates the shared inspector (`⌘I`). `↵` on a Mo
 - Anything that can be missing is a `Metric<T>` and is rendered with `Val`. Do not write `?? 0`.
 - Sample data lives in `src/model/fixtures.ts`, is the default only when not running inside Tauri, and always shows a **Sample data** chip in the toolbar.
 - Add a status or reliability value in one place (`model/status.ts`, `tokens.css`, `StatusGlyph`) and update the Design System page.
-- Window chrome: `titleBarStyle: Overlay`; the toolbar is `data-tauri-drag-region`; the Tauri capability grants only `core:window:allow-start-dragging` beyond defaults.
+- Window chrome: `titleBarStyle: Overlay`; the toolbar is `data-tauri-drag-region`; the Tauri capability grants `core:window:allow-start-dragging` and only the notification permission-check, permission-request and delivery commands beyond core defaults. It grants no filesystem, shell or process permissions.
 
 ## 7. Guidelines for AI agents extending the UI
 

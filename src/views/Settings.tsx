@@ -141,7 +141,20 @@ function DataAndPrivacy() {
 }
 
 function Appearance() {
-  const { data, index, theme, setTheme, density, setDensity, setSidebarW, setInspectorW } = useStore();
+  const {
+    data,
+    index,
+    theme,
+    setTheme,
+    density,
+    setDensity,
+    setSidebarW,
+    setInspectorW,
+    canLive,
+    notifyMe,
+    setNotifyMe,
+    notificationError,
+  } = useStore();
   const hasHistory = data.history.length > 0;
   const keys: [string, string][] = [
     ["⌘K", "Command palette"],
@@ -179,6 +192,16 @@ function Appearance() {
           ]}
         />
       </Setting>
+      <Setting title="Notify me" desc="Notify when an orchestration finishes or fails, or an agent needs input. Desktop app only.">
+        <input
+          type="checkbox"
+          aria-label="Notify me"
+          checked={notifyMe}
+          disabled={!canLive}
+          onChange={(e) => void setNotifyMe(e.target.checked)}
+        />
+      </Setting>
+      {notificationError && <p role="status">{notificationError}</p>}
       <Setting title="Pane sizes" desc="Drag a pane edge to resize it.">
         <button
           className="btn"

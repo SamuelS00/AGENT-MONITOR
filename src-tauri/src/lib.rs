@@ -64,6 +64,7 @@ fn monitor_history(state: State<'_, AppState>) -> Result<Vec<history::HistoryRow
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let storage = Storage::open(app.handle()).map_err(std::io::Error::other)?;
             let keep_from = (chrono::Utc::now() - chrono::Duration::days(HISTORY_DAYS)).to_rfc3339();

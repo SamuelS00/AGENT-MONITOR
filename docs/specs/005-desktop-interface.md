@@ -6,7 +6,7 @@ Provide Overview (when orchestrations exist), Monitor, Execution Explorer (tree 
 
 ## Requirements and rules
 
-A screen is offered only when it can show something and is meant for the user. History & Analytics appears only when stored sessions exist. In live mode they are reconstructed by the backend from the stored snapshots (one session per root execution, matched across snapshots by the tool's own session id); a session that was live in one snapshot and absent from the next is `disconnected`, never `completed`. Snapshots older than 90 days are pruned. The design-system reference is a developer aid and is offered only with sample data. Shortcuts (⌘1…) follow the visible order. Settings holds facts and real options only: Tools (what each adapter observes), Data & privacy (what is read and kept, read-only) and Appearance (theme, density, pane sizes). A control that changes nothing must not be shown.
+A screen is offered only when it can show something and is meant for the user. History & Analytics appears only when stored sessions exist. In live mode they are reconstructed by the backend from the stored snapshots (one session per root execution, matched across snapshots by the tool's own session id); a session that was live in one snapshot and absent from the next is `disconnected`, never `completed`. Snapshots older than 90 days are pruned. The design-system reference is a developer aid and is offered only with sample data. Shortcuts (⌘1…) follow the visible order. Settings holds facts and real options only: Tools (what each adapter observes), Data & privacy (what is read and kept, read-only) and Appearance (theme, density, pane sizes, Notify me). A control that changes nothing must not be shown.
 
 Overview is the first sidebar item whenever at least one root satisfies `isOrchestration`; it disappears when none remain, and an open Overview falls back to Monitor. Its command-palette entry and shortcuts follow the same visible order. One table row per orchestration shows its name and project, outcome chip, meta tool and model, distinct models across its tree as small badges, counts from `describe()`, token rollup, duration and last activity ago. Missing metrics stay unavailable; partial token totals are lower bounds. Clicking a row or pressing Enter opens that root in Execution Explorer through `openInExplorer`. The table includes every orchestration regardless of the selected project.
 
@@ -27,3 +27,11 @@ Live observations refresh every 15 seconds while the app is visible; a hidden wi
 ## Dependencies
 
 React, Lucide and Tauri commands.
+
+## Native notifications
+
+Settings > Appearance includes “Notify me”, off by default and persisted locally as `am.notifyMe`. Only explicitly enabling it can request OS notification permission; denying permission keeps it off and shows an explanation. A restored preference checks permission before sending and never prompts during startup or refresh. Browser previews disable the control.
+
+After each successful live snapshot or refresh, the store compares consecutive live datasets using the pure `notificationsFor` model function. It emits notifications when an orchestration changes from running to finished or failed, or an existing node enters waiting (“Needs input”). The first load, sample datasets, unchanged states, missing nodes and unavailable statuses never trigger completion notifications. Event keys suppress repeated delivery within the app session, including repeated refreshes and source switches; opting in does not replay past events. Notification bodies contain only existing session or agent titles, never prompts or message content; event records retain their source provenance.
+
+The official Tauri notification plugin is registered in the backend. The main-window capability grants only permission checks, permission requests and notification delivery, with no filesystem, shell or process permissions. Notification failures do not interrupt collection.

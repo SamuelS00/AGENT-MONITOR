@@ -7,11 +7,17 @@ import { buildIndex } from "../model/tree";
 import type { Dataset } from "../model/types";
 import { Ctx, type Density, type ExplorerMode, type Store, type ThemePref, type View } from "./storeContext";
 import { usePersisted } from "./usePersisted";
+import { useNotifications } from "./useNotifications";
+import { notificationsFor } from "../model/notifications";
 
 export type { Density, ExplorerMode, ThemePref, View } from "./storeContext";
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const canLive = inTauri();
+  const { notifyMe, setNotifyMe, notificationError, deliver } = useNotifications(canLive);
+  const previousLive = useRef<Dataset | null>(null);
+  const refreshing = useRef(false);
+  const sourceGeneration = useRef(0);
   const [source, setSource] = useState<"sample" | "live">(canLive ? "live" : "sample");
   const [now, setNow] = useState(() => Date.now());
   const sampleRef = useRef<Dataset | null>(null);
@@ -20,7 +26,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [liveHistory, setLiveHistory] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(() => Date.now());
-  const refreshInFlight = useRef(false);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -34,33 +39,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .catch(() => setLiveHistory([]));
   }, []);
 
+  const acceptLive = useCallback(
+    (next: Dataset) => {
+      const events = notificationsFor(previousLive.current, next);
+      previousLive.current = next;
+      setLive(next);
+      void deliver(events);
+    },
+    [deliver],
+  );
+
   const refresh = useCallback(async () => {
-    if (refreshInFlight.current) return;
+    if (refreshing.current) return;
     if (source === "sample") {
       setLastRefresh(Date.now());
       return;
     }
-    refreshInFlight.current = true;
+    refreshing.current = true;
     setLoading(true);
+    const generation = sourceGeneration.current;
     try {
-      setLive(datasetFromSnapshot(await refreshCollector()));
+      const snapshot = await refreshCollector();
+      if (generation !== sourceGeneration.current) return;
+      acceptLive(datasetFromSnapshot(snapshot));
       reloadHistory();
     } catch (e) {
+      if (generation !== sourceGeneration.current) return;
+      previousLive.current = null;
       setLive((d) => ({ ...d, collectorError: String(e) }));
     } finally {
-      refreshInFlight.current = false;
-      setLoading(false);
-      setLastRefresh(Date.now());
+      if (generation === sourceGeneration.current) {
+        refreshing.current = false;
+        setLoading(false);
+        setLastRefresh(Date.now());
+      }
     }
-  }, [source, reloadHistory]);
+  }, [source, reloadHistory, acceptLive]);
 
+  // Keep live data fresh without a click: every 15 s while the window is visible, and once when it becomes visible again.
+  // A tick is skipped while a refresh is still running, so refreshes never overlap.
   useEffect(() => {
     if (!canLive || source !== "live") return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && !refreshInFlight.current) void refresh();
+      if (document.visibilityState === "visible" && !refreshing.current) void refresh();
     }, 15_000);
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible" && !refreshInFlight.current) void refresh();
+      if (document.visibilityState === "visible" && !refreshing.current) void refresh();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -70,19 +94,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [canLive, source, refresh]);
 
   useEffect(() => {
-    if (source !== "live") return;
+    const generation = ++sourceGeneration.current;
+    previousLive.current = null;
+    if (source !== "live") {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    refreshing.current = true;
     setLoading(true);
     loadSnapshot()
       .then((s) => {
-        setLive(datasetFromSnapshot(s));
+        if (cancelled) return;
+        acceptLive(datasetFromSnapshot(s));
         reloadHistory();
       })
-      .catch((e) => setLive((d) => ({ ...d, collectorError: String(e) })))
+      .catch((e) => {
+        if (!cancelled) setLive((d) => ({ ...d, collectorError: String(e) }));
+      })
       .finally(() => {
+        if (cancelled) return;
+        refreshing.current = false;
         setLoading(false);
         setLastRefresh(Date.now());
       });
-  }, [source, reloadHistory]);
+    return () => {
+      sourceGeneration.current = generation + 1;
+      cancelled = true;
+      refreshing.current = false;
+    };
+  }, [source, reloadHistory, acceptLive]);
 
   const data = useMemo(() => (source === "sample" ? sampleRef.current! : { ...live, history: liveHistory }), [source, live, liveHistory]);
   const index = useMemo(() => buildIndex(data.nodes), [data.nodes]);
@@ -198,6 +239,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     resolvedTheme,
     density,
     setDensity,
+    notifyMe,
+    setNotifyMe,
+    notificationError,
     projectFilter,
     setProjectFilter,
     paletteOpen,

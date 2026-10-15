@@ -43,6 +43,9 @@ export interface Store {
   resolvedTheme: "light" | "dark";
   density: Density;
   setDensity: (d: Density) => void;
+  notifyMe: boolean;
+  setNotifyMe: (enabled: boolean) => Promise<void>;
+  notificationError?: string;
   projectFilter?: string;
   setProjectFilter: (p?: string) => void;
   paletteOpen: boolean;

@@ -169,6 +169,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.0.0
         version: 2.12.3
+      '@tauri-apps/plugin-notification':
+        specifier: ^2.6.0
+        version: 2.6.0
       '@xyflow/react':
         specifier: ^12.8.0
         version: 12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -967,6 +970,9 @@ packages:
     resolution: {integrity: sha512-PMSppzAnlT+BvZtRKuidxjRSm2r5t8kDpJ/czmmQUa0AtDNTwrjLE8vApK3phCWGg7isfnYL46Dl1jB4ArI0hA==}
     engines: {node: '>= 10'}
     hasBin: true
+
+  '@tauri-apps/plugin-notification@2.6.0':
+    resolution: {integrity: sha512-QvpsQ6L6uSGT/7AmIrEUrfOiqjP1S8HtBU1ieaX6bvOFXGjnoxbNMR9V+8PVhLqRdOntqevpUJ3c52S+1afsIw==}
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -2710,6 +2716,10 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.12.2
       '@tauri-apps/cli-win32-ia32-msvc': 2.12.2
       '@tauri-apps/cli-win32-x64-msvc': 2.12.2
+
+  '@tauri-apps/plugin-notification@2.6.0':
+    dependencies:
+      '@tauri-apps/api': 2.12.3
 
   '@testing-library/dom@10.4.2':
     dependencies:
