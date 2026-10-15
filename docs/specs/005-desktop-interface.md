@@ -12,6 +12,8 @@ Monitor, Explorer and Timeline share one orchestration model (`src/model/orchest
 
 Every node in the Explorer shows its orchestration level, model badge in the model's brand color, tokens and duration; the clock of a node that is not running stops at its last recorded activity.
 
+The Explorer bar can copy the selected orchestration as Markdown or JSON. Exports include the displayed outcome, counts and node hierarchy with metric provenance, and omit prompts, command lines, paths and hidden session data.
+
 Support dark/light system appearance, progressive disclosure and understandable empty/error states.
 
 ## Use cases and acceptance

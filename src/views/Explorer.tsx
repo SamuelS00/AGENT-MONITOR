@@ -11,6 +11,7 @@ import { fmtAgo, fmtDuration, fmtTokens } from "../model/format";
 import { Banner, EmptyState, Segmented, SkeletonRows, StatusGlyph, Val } from "../ui/primitives";
 import { copy } from "../ui/clipboard";
 import { useMenu } from "../ui/useMenu";
+import { buildOrchestrationExport, renderOrchestrationJson, renderOrchestrationMarkdown } from "../model/export";
 
 const Graph = lazy(() => import("./Graph"));
 
@@ -78,17 +79,38 @@ export function SessionPicker() {
 }
 
 export function ExplorerBar({ withModes = true }: { withModes?: boolean }) {
-  const { mode, setMode, setExpanded, index, data, sessionId } = useStore();
+  const { mode, setMode, setExpanded, index, data, sessionId, now } = useStore();
   const rootId = data.sessions.find((s) => s.id === sessionId)?.rootId;
   const ids = rootId
     ? [rootId, ...descendants(index, rootId)]
         .filter((n) => index.children.has(typeof n === "string" ? n : n.id))
         .map((n) => (typeof n === "string" ? n : n.id))
     : [];
+  const exported = rootId ? buildOrchestrationExport(index, rootId, now) : undefined;
   return (
     <div className="subbar">
       <SessionPicker />
       <div className="grow" />
+      {withModes && exported && (
+        <>
+          <button
+            className="icon-btn"
+            title="Copy as Markdown"
+            aria-label="Copy as Markdown"
+            onClick={() => copy(renderOrchestrationMarkdown(exported))}
+          >
+            MD
+          </button>
+          <button
+            className="icon-btn"
+            title="Copy as JSON"
+            aria-label="Copy as JSON"
+            onClick={() => copy(renderOrchestrationJson(exported))}
+          >
+            JSON
+          </button>
+        </>
+      )}
       <button className="icon-btn" title="Expand all" aria-label="Expand all" onClick={() => setExpanded((s) => new Set([...s, ...ids]))}>
         <ChevronsUpDown size={15} strokeWidth={1.6} />
       </button>

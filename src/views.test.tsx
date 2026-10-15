@@ -4,6 +4,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
+import { copy } from "./ui/clipboard";
+
+vi.mock("./ui/clipboard", () => ({ copy: vi.fn() }));
 
 vi.mock("./monitor", () => ({
   inTauri: () => false,
@@ -31,6 +34,16 @@ describe("views (sample source)", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Open command palette" }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("copies the selected orchestration as Markdown or JSON", async () => {
+    render(<App />);
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Execution Explorer/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy as Markdown" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy as JSON" }));
+    expect(copy).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(copy).mock.calls[0][0])).toContain("# Orchestration");
+    expect(String(vi.mocked(copy).mock.calls[1][0])).toContain('"tree"');
   });
 });
 
