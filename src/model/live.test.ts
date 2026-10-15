@@ -35,6 +35,29 @@ describe("datasetFromSnapshot", () => {
     expect(node.tokens.value).toBeUndefined();
   });
 
+  it("maps last tool independently of token usage with source, confidence and timestamp", () => {
+    const base: ExecutionNode = { id: "fixture-tool", label: "Fixture", tool: "Codex", status: "running", relationship: "confirmed" };
+    const nodes = datasetFromSnapshot(
+      fixtureSnapshot([
+        {
+          ...base,
+          lastTool: "Read",
+          lastToolAt: "2026-01-01T00:01:00Z",
+          lastToolReliability: "inferred",
+          usageSource: "fixture transcript",
+        },
+        { ...base, id: "fixture-absent", lastTool: null, lastToolAt: null },
+        { ...base, id: "fixture-invalid", lastToolAt: "invalid" },
+      ]),
+    ).nodes;
+    expect(nodes[0].lastTool).toEqual({ value: "Read", reliability: "inferred", source: "fixture transcript" });
+    expect(nodes[0].lastToolAt).toBe(Date.parse("2026-01-01T00:01:00Z"));
+    expect(nodes[0].tokens.reliability).toBe("unavailable");
+    expect(nodes[1].lastTool?.reliability).toBe("unavailable");
+    expect(nodes[1].lastToolAt).toBeUndefined();
+    expect(nodes[2].lastToolAt).toBeUndefined();
+  });
+
   it("carries confirmed usage with its source and reliability", () => {
     const dataset = datasetFromSnapshot(
       fixtureSnapshot([

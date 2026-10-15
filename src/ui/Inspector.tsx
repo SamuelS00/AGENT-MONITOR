@@ -90,6 +90,18 @@ export function Inspector() {
       <Section title="Overview">
         <dl>
           <Row k="Tool">{node.tool}</Row>
+          {node.lastTool?.value && (
+            <Row k="Last tool">
+              <Val m={node.lastTool} fmt={String} verbose />
+              {node.lastToolAt !== undefined ? (
+                <span className="muted" title={new Date(node.lastToolAt).toISOString()}>
+                  {` · ${fmtClock(node.lastToolAt)} · ${fmtAgo(node.lastToolAt, now)}`}
+                </span>
+              ) : (
+                <span className="val val-na"> · Time unavailable</span>
+              )}
+            </Row>
+          )}
           <Row k="Model">
             <ModelBadge node={node} />
           </Row>

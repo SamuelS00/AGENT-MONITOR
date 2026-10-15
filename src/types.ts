@@ -46,6 +46,9 @@ export interface ExecutionNode {
   /** USD as reported by the tool itself; never computed by the monitor. */
   costUsd?: number;
   lastActivityAt?: string;
+  lastTool?: string | null;
+  lastToolAt?: string | null;
+  lastToolReliability?: SourceReliability;
 }
 
 export interface MonitorSnapshot {

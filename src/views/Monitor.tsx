@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { toolInUse } from "../model/activity";
 import { ModelBadge } from "../ui/ModelBadge";
 import { nodeBrandColor } from "../ui/brand";
 import { useStore } from "../app/storeContext";
@@ -174,6 +175,7 @@ export function Monitor() {
                 </div>
                 {items.map(({ s, root, status, summary, agents, running, waiting, roll }) => {
                   const dur = durationMs(root, now);
+                  const toolHint = toolInUse(root, now);
                   return (
                     <div
                       key={s.id}
@@ -201,16 +203,16 @@ export function Monitor() {
                         </span>
                         {summary ? (
                           <span className="sub trunc">
-                            {[describe(summary), running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`]
+                            {[describe(summary), running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`, toolHint]
                               .filter(Boolean)
                               .join(" · ") || "No delegated work recorded"}
                           </span>
                         ) : (
-                          (isActive(status) ? running > 0 || waiting > 0 || root.activity : root.activity) && (
-                            <span className="sub trunc">
-                              {[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`].filter(Boolean).join(", ")}
-                              {(running > 0 || waiting > 0) && root.activity ? " · " : ""}
-                              {root.activity}
+                          (running > 0 || waiting > 0 || root.activity || toolHint) && (
+                            <span className="sub trunc" title={toolHint ? root.lastTool?.source : undefined}>
+                              {[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`, root.activity, toolHint]
+                                .filter(Boolean)
+                                .join(" · ")}
                             </span>
                           )
                         )}

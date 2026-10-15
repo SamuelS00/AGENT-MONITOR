@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo, useRef } from "react";
 import { nodeBrandColor } from "../ui/brand";
 import { ROLE_LABEL } from "../model/status";
+import { toolInUse } from "../model/activity";
 import { ModelBadge } from "../ui/ModelBadge";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, ListTree } from "lucide-react";
 import { useStore } from "../app/storeContext";
@@ -371,6 +372,11 @@ function Tree({ rootId }: { rootId: string }) {
               )}
               {!r.open && r.hasChildren && <span className="muted collapsed-n">{kids.length}</span>}
               {n.activity && <span className="sub trunc">{n.activity}</span>}
+              {toolInUse(n, now) && (
+                <span className="sub trunc" title={n.lastTool?.source}>
+                  {toolInUse(n, now)}
+                </span>
+              )}
             </span>
             <span className="trunc">
               <ModelBadge node={n} compact />

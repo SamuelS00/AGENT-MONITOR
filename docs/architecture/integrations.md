@@ -50,6 +50,10 @@ The UI stops the clock of any node that is not running or waiting at its last re
 
 The `task` field carries a short title the tool recorded itself, capped at 140 characters with whitespace collapsed: the Orca task title, the Claude Code subagent `description` of its `.meta.json`, and the OpenCode session title (its "New session - ..." placeholder is ignored). Task specs, objectives, results, prompts and message bodies are never read.
 
+`lastTool` and `lastToolAt` expose only the latest recorded tool name and timestamp: Claude Code assistant `message.content[]` blocks of type `tool_use` (`name`), or Codex `response_item` payloads of type `function_call` (`name`). This extraction seeks to the final 64 KiB, with one extra byte to recognize a newline boundary; it discards a partial first line and skips malformed records. It does not scan older calls, deserialize tool inputs/arguments/outputs/text, or retain raw bytes. Existing cumulative usage collection remains separate; tool metadata remains available even above its 512 MiB scan limit. Names must be short tool identifiers (at most 128 ASCII letters, digits or `_-.:/`), and timestamps must be RFC 3339; unavailable fields serialize as `null`. Other adapters leave these fields unavailable.
+
+`lastToolReliability` carries the transcript pairing confidence independently of token availability, with provenance in `usageSource`. Monitor and Explorer show a quiet `using <Tool>` hint only for running nodes whose call is less than two minutes old, never for missing, invalid or future timestamps. Inferred pairings retain `≈`; Inspector shows the last tool with its recorded time even when the call is older or the node has stopped. A recent call is an activity hint, not proof that the call is still executing.
+
 ## Orca
 
 `orchestration.db` is opened read-only. Only identifiers, states, depth, timestamps, task titles, the worktree and the launched agent are selected.

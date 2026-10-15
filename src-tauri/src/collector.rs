@@ -1150,6 +1150,13 @@ impl Collector {
 }
 
 fn apply_usage(node: &mut ExecutionNode, usage: &SessionUsage, reliability: Reliability, source: String) {
+    node.last_tool = usage.last_tool.clone();
+    node.last_tool_at = usage.last_tool_at.clone();
+    node.last_tool_reliability = if usage.last_tool.is_some() {
+        reliability.clone()
+    } else {
+        Reliability::Unavailable
+    };
     if node.session_ref.is_none() {
         node.session_ref = usage.session_id.clone();
     }
@@ -1180,6 +1187,31 @@ mod tests {
 
     fn cmd(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn last_tool_keeps_pairing_confidence_without_token_usage() {
+        let mut node = ExecutionNode::new("fixture".into(), "fixture".into(), "Codex");
+        let usage = SessionUsage {
+            last_tool: Some("exec_command".into()),
+            last_tool_at: Some("2026-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        apply_usage(&mut node, &usage, Reliability::Inferred, "fixture transcript".into());
+        assert_eq!(node.last_tool, usage.last_tool);
+        assert_eq!(node.last_tool_at, usage.last_tool_at);
+        assert!(matches!(node.last_tool_reliability, Reliability::Inferred));
+        assert_eq!(node.usage_source.as_deref(), Some("fixture transcript"));
+        assert_eq!(node.tokens, None);
+        apply_usage(
+            &mut node,
+            &SessionUsage::default(),
+            Reliability::Confirmed,
+            "fixture missing".into(),
+        );
+        assert_eq!(node.last_tool, None);
+        assert_eq!(node.last_tool_at, None);
+        assert!(matches!(node.last_tool_reliability, Reliability::Unavailable));
     }
 
     #[test]

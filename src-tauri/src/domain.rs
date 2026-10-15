@@ -131,6 +131,10 @@ pub struct ExecutionNode {
     #[serde(flatten)]
     pub detail: UsageDetail,
     pub last_activity_at: Option<String>,
+    pub last_tool: Option<String>,
+    pub last_tool_at: Option<String>,
+    /// Uses the same transcript source as `usage_source`, independently of token availability.
+    pub last_tool_reliability: Reliability,
 }
 
 impl ExecutionNode {
@@ -160,6 +164,9 @@ impl ExecutionNode {
             usage_source: None,
             detail: UsageDetail::default(),
             last_activity_at: None,
+            last_tool: None,
+            last_tool_at: None,
+            last_tool_reliability: Reliability::Unavailable,
         }
     }
 }
@@ -186,6 +193,8 @@ mod tests {
         };
         let value = serde_json::to_value(node).expect("serialize fixture");
         assert!(value["tokens"].is_null());
+        assert!(value["lastTool"].is_null() && value["lastToolAt"].is_null());
+        assert_eq!(value["lastToolReliability"], "unavailable");
         assert!(value["model"].is_null());
         assert!(value["costUsd"].is_null() && value["provider"].is_null() && value["effort"].is_null());
         assert_eq!(value["relationship"], "inferred");

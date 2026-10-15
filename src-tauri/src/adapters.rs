@@ -1,16 +1,18 @@
 //! Read-only session adapters. They extract only the model name, token counters and timestamps
-//! from local transcript files. Message content is never kept, stored or returned.
+//! and tool names from local transcript files. Message content is never kept, stored or returned.
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
+use serde::Deserialize;
 use serde_json::Value;
 
-/// Files above this size are skipped rather than streamed on every refresh.
+/// Cumulative usage above this size is skipped; tool-name extraction remains bounded to the tail.
 const MAX_TRANSCRIPT_BYTES: u64 = 512 * 1024 * 1024;
+const TOOL_TAIL_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionUsage {
@@ -31,6 +33,8 @@ pub struct SessionUsage {
     pub cost_usd: Option<f64>,
     pub started_at: Option<String>,
     pub last_event_at: Option<String>,
+    pub last_tool: Option<String>,
+    pub last_tool_at: Option<String>,
     pub session_id: Option<String>,
     /// Session that delegated to this one, exactly as the tool recorded it (Codex `parent_thread_id`).
     pub parent_session_id: Option<String>,
@@ -368,53 +372,154 @@ fn codex_cwd(path: &Path) -> Option<String> {
     v.pointer("/payload/cwd").and_then(Value::as_str).map(str::to_owned)
 }
 
-pub fn parse_claude(file: &TranscriptFile) -> Option<SessionUsage> {
-    if file.len > MAX_TRANSCRIPT_BYTES {
-        return None;
+// These projections deliberately have no fields for inputs, arguments, outputs or text.
+// Serde skips those values without materializing them as strings or JSON values.
+#[derive(Deserialize)]
+struct ToolRecord {
+    #[serde(rename = "type")]
+    kind: String,
+    timestamp: Option<String>,
+    message: Option<ToolMessage>,
+    payload: Option<ToolBlock>,
+}
+
+#[derive(Deserialize)]
+struct ToolMessage {
+    #[serde(default)]
+    content: Vec<ToolBlock>,
+}
+
+#[derive(Deserialize)]
+struct ToolBlock {
+    #[serde(rename = "type")]
+    kind: String,
+    name: Option<String>,
+}
+
+/// Only the final 64 KiB plus a newline boundary byte is read, even for a growing transcript.
+/// A partial first line is discarded; malformed/unfinished records cannot replace a valid call.
+fn last_tool(path: &Path, claude: bool) -> Option<(String, Option<String>)> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TOOL_TAIL_BYTES);
+    let read_start = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(read_start)).ok()?;
+    let mut bytes = Vec::with_capacity(TOOL_TAIL_BYTES as usize);
+    file.take(len - read_start).read_to_end(&mut bytes).ok()?;
+    let tail = if start > 0 {
+        &bytes[bytes.iter().position(|b| *b == b'\n')? + 1..]
+    } else {
+        &bytes[..]
+    };
+    let mut latest = None;
+    for line in tail.split(|b| *b == b'\n') {
+        let Ok(record) = serde_json::from_slice::<ToolRecord>(line) else {
+            continue;
+        };
+        let name = match record.kind.as_str() {
+            "assistant" if claude => record.message.and_then(|m| {
+                m.content
+                    .into_iter()
+                    .rev()
+                    .find(|b| b.kind == "tool_use")
+                    .and_then(|b| b.name)
+            }),
+            "response_item" if !claude => record
+                .payload
+                .filter(|b| b.kind == "function_call")
+                .and_then(|b| b.name),
+            _ => continue,
+        };
+        // Tool identifiers are short names, never free-form content.
+        let Some(name) = name.filter(|n| {
+            !n.is_empty() && n.len() <= 128 && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.:/".contains(&b))
+        }) else {
+            continue;
+        };
+        let timestamp = record
+            .timestamp
+            .filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok());
+        latest = Some((name, timestamp));
     }
-    let reader = BufReader::new(File::open(&file.path).ok()?);
-    let mut by_message: std::collections::HashMap<String, (u64, u64, u64, u64)> = std::collections::HashMap::new();
+    latest
+}
+
+#[derive(Deserialize)]
+struct RecordKind {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct ClaudeUsageRecord {
+    #[serde(rename = "type")]
+    kind: String,
+    timestamp: Option<String>,
+    message: Option<ClaudeUsageMessage>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeUsageMessage {
+    id: Option<String>,
+    model: Option<String>,
+    usage: Option<ClaudeTokenUsage>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ClaudeTokenUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
+}
+
+pub fn parse_claude(file: &TranscriptFile) -> Option<SessionUsage> {
     let mut usage = SessionUsage {
         session_id: file.path.file_stem().map(|s| s.to_string_lossy().into_owned()),
         ..Default::default()
     };
+    if let Some((name, at)) = last_tool(&file.path, true) {
+        usage.last_tool = Some(name);
+        usage.last_tool_at = at;
+    }
+    if file.len > MAX_TRANSCRIPT_BYTES {
+        return usage.last_tool.is_some().then_some(usage);
+    }
+    let reader = BufReader::new(File::open(&file.path).ok()?);
+    let mut by_message: std::collections::HashMap<String, (u64, u64, u64, u64)> = std::collections::HashMap::new();
     for line in reader.lines().map_while(Result::ok) {
         // Cheap prefilter so unrelated lines are never parsed.
         if !line.contains("\"usage\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+        let Ok(v) = serde_json::from_str::<ClaudeUsageRecord>(&line) else {
             continue;
         };
-        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        if v.kind != "assistant" {
             continue;
         }
-        let Some(message) = v.get("message") else { continue };
-        if let Some(model) = message.get("model").and_then(Value::as_str) {
+        let Some(message) = v.message else { continue };
+        if let Some(model) = message.model {
             if !model.starts_with('<') {
                 usage.model = Some(model.to_owned());
             }
         }
-        if let Some(u) = message.get("usage") {
-            let n = |key: &str| u.get(key).and_then(Value::as_u64).unwrap_or(0);
-            let input = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+        if let Some(u) = message.usage {
+            let input = u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
             // The same API message can be logged once per content block; keep the latest counters per id.
-            let id = message
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("line:{}", by_message.len()));
+            let id = message.id.unwrap_or_else(|| format!("line:{}", by_message.len()));
             by_message.insert(
                 id,
                 (
                     input,
-                    n("output_tokens"),
-                    n("cache_read_input_tokens"),
-                    n("cache_creation_input_tokens"),
+                    u.output_tokens,
+                    u.cache_read_input_tokens,
+                    u.cache_creation_input_tokens,
                 ),
             );
         }
-        if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
+        if let Some(ts) = v.timestamp {
             usage.started_at.get_or_insert_with(|| ts.to_owned());
             usage.last_event_at = Some(ts.to_owned());
         }
@@ -442,17 +547,27 @@ fn codex_agent_kind(session_meta: &Value) -> Option<String> {
 }
 
 pub fn parse_codex(file: &TranscriptFile) -> Option<SessionUsage> {
+    let mut usage = SessionUsage::default();
+    if let Some((name, at)) = last_tool(&file.path, false) {
+        usage.last_tool = Some(name);
+        usage.last_tool_at = at;
+    }
     if file.len > MAX_TRANSCRIPT_BYTES {
-        return None;
+        return usage.last_tool.is_some().then_some(usage);
     }
     let reader = BufReader::new(File::open(&file.path).ok()?);
-    let mut usage = SessionUsage::default();
     for line in reader.lines().map_while(Result::ok) {
         let wants_meta = line.starts_with("{\"timestamp\"")
             && (line.contains("\"session_meta\"")
                 || line.contains("\"turn_context\"")
                 || line.contains("\"token_count\""));
         if !wants_meta {
+            continue;
+        }
+        let Ok(kind) = serde_json::from_str::<RecordKind>(&line) else {
+            continue;
+        };
+        if !matches!(kind.kind.as_str(), "session_meta" | "turn_context" | "event_msg") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
@@ -630,6 +745,8 @@ fn opencode_query(db: &Path, cwd: Option<&Path>, updated_since_ms: u64, with_chi
                     parent_session_id: parent_id.clone(),
                     agent_kind: agent.filter(|a| parent_id.is_some() && !a.is_empty()),
                     session_id: Some(id),
+                    last_tool: None,
+                    last_tool_at: None,
                 },
             })
         },
@@ -891,6 +1008,117 @@ mod tests {
             (Some(40), Some(20), None, None)
         );
         let _ = fs::remove_file(&f.path);
+    }
+
+    fn tool_line(claude: bool, name: &str, timestamp: &str) -> String {
+        if claude {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{timestamp}","message":{{"id":"fixture","content":[{{"type":"text","text":"SECRET_MESSAGE"}},{{"type":"tool_use","name":"{name}","input":{{"command":"SECRET_INPUT"}}}}],"usage":{{"input_tokens":1}}}}}}
+"#
+            )
+        } else {
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"response_item","payload":{{"type":"function_call","name":"{name}","arguments":"SECRET_ARGUMENTS token_count","output":"SECRET_OUTPUT"}}}}
+"#
+            )
+        }
+    }
+
+    #[test]
+    fn latest_tool_returns_only_name_and_timestamp_without_payloads() {
+        for claude in [true, false] {
+            let body = tool_line(claude, "Read", "2026-01-01T00:00:00Z")
+                + &tool_line(claude, "mcp__tools__search", "2026-01-01T00:01:00Z")
+                + r#"{"type":"assistant","message":{"content":[{"type":"text","name":"Fake","text":"SECRET_MESSAGE"}]}}
+{"type":"response_item","payload":{"type":"function_call_output","name":"Fake","output":"SECRET_OUTPUT"}}
+not json
+{"type":"assistant"
+"#;
+            let file = temp(if claude { "tool-claude" } else { "tool-codex" }, &body);
+            let usage = if claude {
+                parse_claude(&file)
+            } else {
+                parse_codex(&file)
+            }
+            .unwrap();
+            assert_eq!(usage.last_tool.as_deref(), Some("mcp__tools__search"));
+            assert_eq!(usage.last_tool_at.as_deref(), Some("2026-01-01T00:01:00Z"));
+            assert!(
+                !format!("{usage:?}").contains("SECRET"),
+                "payload content must never escape the adapter"
+            );
+            fs::remove_file(file.path).unwrap();
+        }
+    }
+
+    #[test]
+    fn tool_tail_is_bounded_and_discards_partial_first_line() {
+        for claude in [true, false] {
+            let old = tool_line(claude, "Old", "2026-01-01T00:00:00Z");
+            // The seek lands in the middle of a line longer than the entire tail window.
+            let prefix = old + &"x".repeat(100_000) + "\n";
+            let file = temp(if claude { "tail-claude" } else { "tail-codex" }, &prefix);
+            assert_eq!(
+                last_tool(&file.path, claude),
+                None,
+                "calls outside the tail are unavailable"
+            );
+            let recent = tool_line(claude, "Bash", "2026-01-01T00:01:00Z");
+            fs::write(&file.path, prefix + &recent + "malformed\n").unwrap();
+            assert_eq!(
+                last_tool(&file.path, claude),
+                Some(("Bash".into(), Some("2026-01-01T00:01:00Z".into())))
+            );
+            // A seek exactly at a line boundary must keep that first complete record.
+            let tail = recent.clone() + &"\n".repeat(TOOL_TAIL_BYTES as usize - recent.len());
+            fs::write(&file.path, "older line\n".to_owned() + &tail).unwrap();
+            assert_eq!(last_tool(&file.path, claude).unwrap().0, "Bash");
+            fs::remove_file(file.path).unwrap();
+        }
+    }
+
+    #[test]
+    fn tool_metadata_survives_the_cumulative_usage_size_limit() {
+        for claude in [true, false] {
+            let mut file = temp(if claude { "huge-claude" } else { "huge-codex" }, "");
+            let mut output = fs::OpenOptions::new().write(true).open(&file.path).unwrap();
+            output.set_len(MAX_TRANSCRIPT_BYTES + TOOL_TAIL_BYTES).unwrap();
+            output.seek(SeekFrom::End(0)).unwrap();
+            output
+                .write_all(("\n".to_owned() + &tool_line(claude, "Read", "2026-01-01T00:00:00Z")).as_bytes())
+                .unwrap();
+            file.len = output.metadata().unwrap().len();
+            let usage = if claude {
+                parse_claude(&file)
+            } else {
+                parse_codex(&file)
+            }
+            .unwrap();
+            assert_eq!(usage.last_tool.as_deref(), Some("Read"));
+            assert_eq!(usage.tokens_in, None);
+            fs::remove_file(file.path).unwrap();
+        }
+    }
+
+    #[test]
+    fn tool_tail_handles_absence_invalid_names_and_missing_timestamps() {
+        let file = temp("tool-absent", "{}\nnot json\n{\"type\":\"user\",\"name\":\"Fake\"}\n");
+        assert_eq!(last_tool(&file.path, true), None);
+        assert_eq!(last_tool(&file.path, false), None);
+        for claude in [true, false] {
+            fs::write(&file.path, tool_line(claude, "Read", "invalid")).unwrap();
+            assert_eq!(last_tool(&file.path, claude), Some(("Read".into(), None)));
+            fs::write(&file.path, tool_line(claude, "not a tool name", "2026-01-01T00:00:00Z")).unwrap();
+            assert_eq!(last_tool(&file.path, claude), None);
+            fs::write(
+                &file.path,
+                tool_line(claude, "Read", "2026-01-01T00:00:00Z")
+                    .replace("\"timestamp\":\"2026-01-01T00:00:00Z\",", ""),
+            )
+            .unwrap();
+            assert_eq!(last_tool(&file.path, claude), Some(("Read".into(), None)));
+        }
+        fs::remove_file(file.path).unwrap();
     }
 
     #[test]

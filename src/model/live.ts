@@ -50,6 +50,8 @@ export function datasetFromSnapshot(s: MonitorSnapshot): Dataset {
       status: e.status,
       startedAt: parse(e.startedAt),
       lastActivityAt: parse(e.lastActivityAt),
+      lastTool: metric(e.lastTool, e.lastToolReliability, usageSource),
+      lastToolAt: parse(e.lastToolAt ?? undefined),
       waits: [],
       tokens: metric(e.tokens, usageRel, usageSource),
       tokensIn: e.tokensIn != null ? metric(e.tokensIn, usageRel, usageSource) : undefined,

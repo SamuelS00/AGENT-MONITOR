@@ -79,6 +79,38 @@ describe("App (live source)", () => {
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
   });
 
+  it.each([
+    { status: "running" as const, age: 10_000, hint: true },
+    { status: "running" as const, age: 180_000, hint: false },
+    { status: "idle" as const, age: 10_000, hint: false },
+  ])("shows tool hints only for fresh running calls ($status, $age ms)", async ({ status, age, hint }) => {
+    const at = new Date(Date.now() - age).toISOString();
+    loadMock.mockResolvedValue({
+      ...fixtureSnapshot,
+      executions: [
+        {
+          ...fixtureExecution,
+          status,
+          lastTool: "Read",
+          lastToolAt: at,
+          lastToolReliability: "confirmed",
+          usageSource: "fixture transcript",
+        },
+      ],
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Fixture agent run"));
+    const monitor = screen.getByRole("table", { name: "Sessions by project" });
+    expect(within(monitor).queryByText(/using Read/) !== null).toBe(hint);
+    expect(screen.getByText("Last tool")).toBeInTheDocument();
+    expect(screen.getByText("Read")).toHaveAttribute("title", "Confirmed · fixture transcript");
+    expect(screen.getByTitle(at)).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Execution Explorer/ }));
+    await screen.findByRole("tree", { name: "Execution hierarchy" });
+    expect(screen.queryByText(/using Read/) !== null).toBe(hint);
+  });
+
   it("surfaces collector errors instead of silently dropping them", async () => {
     loadMock.mockRejectedValue(new Error("fixture failure"));
     render(<App />);
