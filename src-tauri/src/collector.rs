@@ -44,8 +44,8 @@ const SAFE_SUBCOMMANDS: &[&str] = &[
 const ORCA_STALE: Duration = Duration::from_secs(10 * 60);
 const LAUNCHERS: &[&str] = &["node", "bun", "deno", "python", "python3", "npx"];
 
-/// (transcript, run id) -> (mtime, length, mentions the run id).
-type RunMentionCache = HashMap<(PathBuf, String), (SystemTime, u64, bool)>;
+/// (transcript, run id) -> (mtime, length, first mention: none, or its timestamp when readable).
+type RunMentionCache = HashMap<(PathBuf, String), (SystemTime, u64, Option<Option<i64>>)>;
 type UsageCache = HashMap<PathBuf, (SystemTime, u64, SessionUsage)>;
 
 #[derive(Default)]
@@ -172,8 +172,9 @@ fn attach_parents(
 
 const ORCA_SOURCE: &str = "Orca orchestration database";
 const ORCA_LINK_SOURCE: &str = "Orca dispatch id in the session's opening prompt";
-/// How far into a transcript the dispatch id is looked for. Orca writes it in the worker's first prompt.
-const ORCA_OPEN_BYTES: u64 = 256 * 1024;
+/// How many lines into a transcript the dispatch id is looked for. Orca writes it in the worker's opening prompt,
+/// which is within the first few lines; a coordinator only mentions it far later.
+const ORCA_OPEN_LINES: usize = 20;
 /// A transcript may start this long before Orca stamps the dispatch (clock and launch skew).
 const ORCA_START_SLACK_S: i64 = 120;
 /// Transcripts larger than this are not scanned for a run id.
@@ -207,7 +208,7 @@ fn find_worker_session(
         claude
             .iter()
             .filter(|s| wants("claude") && recent(s.file.modified) && same_tree(s.cwd.as_deref()))
-            .find(|s| adapters::opens_with(&s.file.path, &dispatch.id, ORCA_OPEN_BYTES))
+            .find(|s| adapters::opens_with(&s.file.path, &dispatch.id, ORCA_OPEN_LINES))
             .map(|s| WorkerSession {
                 path: s.file.path.clone(),
                 modified: s.file.modified,
@@ -219,7 +220,7 @@ fn find_worker_session(
         codex
             .iter()
             .filter(|r| wants("codex") && recent(r.file.modified) && same_tree(r.cwd.as_deref()))
-            .find(|r| adapters::opens_with(&r.file.path, &dispatch.id, ORCA_OPEN_BYTES))
+            .find(|r| adapters::opens_with(&r.file.path, &dispatch.id, ORCA_OPEN_LINES))
             .map(|r| WorkerSession {
                 path: r.file.path.clone(),
                 modified: r.file.modified,
@@ -230,16 +231,28 @@ fn find_worker_session(
     from_claude().or_else(from_codex)
 }
 
-/// Sessions that could be the coordinator of an Orca run, newest first, each flagged `true` for Claude Code and
-/// `false` for Codex. A candidate is not a worker's own session, was written in one of the run's worktrees since the
-/// run began, and `mentions` its transcript names the run id.
+/// A session that may have issued an Orca run, and when it first named the run id.
+#[derive(Clone, Debug)]
+struct Candidate {
+    file: TranscriptFile,
+    claude: bool,
+    first_ms: Option<i64>,
+}
+
+/// A candidate must beat the runner-up by this much for the match to count as confirmed.
+const COORDINATOR_GAP_MS: i64 = 30_000;
+
+/// Sessions that could be the coordinator of an Orca run, the earliest first mention first. A candidate is not a
+/// worker's own session, was written in one of the run's worktrees since the run began, and its transcript names the
+/// run id (`first_mention` returns when it first does). The coordinator names the id the instant it creates the run;
+/// a session that only inspects the run later names it later, so the earliest mention is the coordinator.
 fn coordinator_candidates(
     members: &[&OrcaDispatch],
     claude: &[ClaudeSession],
     codex: &[CodexRollout],
     worker_paths: &[PathBuf],
-    mentions: impl Fn(&TranscriptFile) -> bool,
-) -> Vec<(TranscriptFile, bool)> {
+    first_mention: impl Fn(&TranscriptFile) -> Option<Option<i64>>,
+) -> Vec<Candidate> {
     let trees: Vec<&str> = members.iter().filter_map(|d| d.worktree_path.as_deref()).collect();
     let floor = members
         .iter()
@@ -252,19 +265,37 @@ fn coordinator_candidates(
             && floor.is_none_or(|floor| file.modified >= floor)
             && (trees.is_empty() || cwd.is_none_or(|cwd| trees.contains(&cwd)))
     };
-    let mut candidates: Vec<(TranscriptFile, bool)> = Vec::new();
-    for s in claude {
-        if eligible(&s.file, s.cwd.as_deref()) && mentions(&s.file) {
-            candidates.push((s.file.clone(), true));
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut consider = |file: &TranscriptFile, cwd: Option<&str>, is_claude: bool| {
+        if !eligible(file, cwd) {
+            return;
         }
+        if let Some(first_ms) = first_mention(file) {
+            candidates.push(Candidate {
+                file: file.clone(),
+                claude: is_claude,
+                first_ms,
+            });
+        }
+    };
+    for s in claude {
+        consider(&s.file, s.cwd.as_deref(), true);
     }
     for r in codex {
-        if eligible(&r.file, r.cwd.as_deref()) && mentions(&r.file) {
-            candidates.push((r.file.clone(), false));
-        }
+        consider(&r.file, r.cwd.as_deref(), false);
     }
-    candidates.sort_by_key(|(file, _)| std::cmp::Reverse(file.modified));
+    // Unreadable timestamps rank last; ties fall back to the most recently written session.
+    candidates.sort_by_key(|c| (c.first_ms.unwrap_or(i64::MAX), std::cmp::Reverse(c.file.modified)));
     candidates
+}
+
+/// Whether the best candidate clearly leads: it is alone, or its first mention precedes the runner-up's by a margin.
+fn coordinator_confirmed(candidates: &[Candidate]) -> bool {
+    match candidates {
+        [] => false,
+        [_] => true,
+        [best, next, ..] => matches!((best.first_ms, next.first_ms), (Some(a), Some(b)) if b - a > COORDINATOR_GAP_MS),
+    }
 }
 
 /// A Codex thread the index lists but whose rollout file is gone or was never written: the index is then the only
@@ -789,8 +820,8 @@ impl Collector {
         (node, subagents)
     }
 
-    /// Whether a transcript mentions an Orca run id. Cached per file version: a long transcript is scanned once.
-    fn mentions_run(&self, file: &TranscriptFile, run_id: &str) -> bool {
+    /// When a transcript first names an Orca run id. Cached per file version: a long transcript is scanned once.
+    fn first_run_mention(&self, file: &TranscriptFile, run_id: &str) -> Option<Option<i64>> {
         let key = (file.path.clone(), run_id.to_owned());
         if let Ok(cache) = self.coordinators.lock() {
             if let Some((modified, len, found)) = cache.get(&key) {
@@ -799,7 +830,11 @@ impl Collector {
                 }
             }
         }
-        let found = file.len <= MAX_COORDINATOR_SCAN_BYTES && adapters::mentions(&file.path, run_id);
+        let found = if file.len <= MAX_COORDINATOR_SCAN_BYTES {
+            adapters::first_mention(&file.path, run_id)
+        } else {
+            None
+        };
         if let Ok(mut cache) = self.coordinators.lock() {
             cache.insert(key, (file.modified, file.len, found));
         }
@@ -880,11 +915,12 @@ impl Collector {
         for run_id in run_ids {
             let members: Vec<&OrcaDispatch> = dispatches.iter().filter(|d| d.run_id == run_id).collect();
             let candidates = coordinator_candidates(&members, &claude, &codex, &worker_paths, |file| {
-                self.mentions_run(file, run_id)
+                self.first_run_mention(file, run_id)
             });
-            let Some((file, is_claude)) = candidates.first().cloned() else {
+            let Some(best) = candidates.first().cloned() else {
                 continue;
             };
+            let (file, is_claude) = (best.file, best.claude);
             let meta_id = if let Some(owner) = owner_of_file.get(&file.path) {
                 owner.clone()
             } else if is_claude {
@@ -919,7 +955,7 @@ impl Collector {
                 meta.level = Some(ExecutionLevel::Meta);
             }
             let run_node_id = format!("orca-run:{run_id}");
-            let confirmed = candidates.len() == 1;
+            let confirmed = coordinator_confirmed(&candidates);
             for node in nodes
                 .iter_mut()
                 .filter(|n| n.parent_id.as_deref() == Some(run_node_id.as_str()))
@@ -1435,7 +1471,7 @@ mod tests {
     fn an_orca_worker_is_matched_to_the_session_that_opens_with_its_dispatch_id() {
         let worker = transcript("w-open", "{\"m\":\"You are dispatch ctx_w1 on task t\"}\n");
         // The coordinator's own session also mentions the id, but only after a long unrelated prefix.
-        let coordinator = transcript("w-coord", &format!("{}ctx_w1\n", "x".repeat(300_000)));
+        let coordinator = transcript("w-coord", &format!("{}ctx_w1\n", "line\n".repeat(40)));
         let elsewhere = transcript("w-else", "{\"m\":\"ctx_w1 in another repo\"}\n");
         let claude = vec![
             ClaudeSession {
@@ -1514,15 +1550,20 @@ mod tests {
     }
 
     #[test]
-    fn the_coordinator_may_be_a_codex_session_and_never_a_worker() {
-        let coordinator = transcript("c-codex", "{\"m\":\"run_r1 issued here\"}\n");
-        let worker = transcript("c-worker", "{\"m\":\"run_r1 appears in a worker too\"}\n");
-        let elsewhere = transcript("c-else", "{\"m\":\"run_r1 in another repo\"}\n");
-        let unrelated = transcript("c-unrelated", "{\"m\":\"nothing\"}\n");
+    fn the_coordinator_is_the_session_that_named_the_run_first_and_never_a_worker() {
+        let coordinator = transcript("c-codex", "x\n");
+        let observer = transcript("c-observer", "x\n"); // a later session that merely looks at the run
+        let worker = transcript("c-worker", "x\n");
+        let elsewhere = transcript("c-else", "x\n");
+        let unrelated = transcript("c-unrelated", "x\n");
         let rollout = |file: &TranscriptFile, cwd: &str| CodexRollout {
             file: file.clone(),
             cwd: Some(cwd.into()),
             archived: false,
+        };
+        let claude_session = |file: &TranscriptFile| ClaudeSession {
+            file: file.clone(),
+            cwd: Some("/repo".into()),
         };
         let codex = vec![
             rollout(&coordinator, "/repo"),
@@ -1530,27 +1571,52 @@ mod tests {
             rollout(&elsewhere, "/other"),
             rollout(&unrelated, "/repo"),
         ];
+        let claude = vec![claude_session(&observer)];
         let mut d = dispatch("w1", "r1", None, "completed");
         d.worktree_path = Some("/repo".into());
         d.created_s = Some(0);
-        let mentions = |f: &TranscriptFile| adapters::mentions(&f.path, "run_r1");
-        let found = coordinator_candidates(&[&d], &[], &codex, std::slice::from_ref(&worker.path), mentions);
+        // First mentions: the Codex coordinator names the run at creation (t=1s); the observer, which is also the more
+        // recently written session, only does so minutes later (t=300s).
+        let first = |f: &TranscriptFile| {
+            if f.path == coordinator.path {
+                Some(Some(1_000))
+            } else if f.path == observer.path {
+                Some(Some(300_000))
+            } else if f.path == worker.path || f.path == elsewhere.path {
+                Some(Some(2_000))
+            } else {
+                None
+            }
+        };
+        let found = coordinator_candidates(&[&d], &claude, &codex, std::slice::from_ref(&worker.path), first);
         assert_eq!(
             found.len(),
-            1,
-            "not the worker, not another repo, not a transcript that never names the run"
+            2,
+            "not the worker, not another repo, not a session that never names the run"
         );
-        assert_eq!(found[0].0.path, coordinator.path);
-        assert!(!found[0].1, "a Codex coordinator is flagged as not Claude");
-        // Two matching sessions are both returned, so the caller can mark the edge inferred.
-        let twin = transcript("c-twin", "{\"m\":\"run_r1 again\"}\n");
+        assert_eq!(
+            found[0].file.path, coordinator.path,
+            "the earliest mention wins over the more recent session"
+        );
+        assert!(!found[0].claude, "a Codex coordinator is flagged as not Claude");
+        assert!(coordinator_confirmed(&found), "a 5 minute lead is a clear win");
+
+        // Two sessions naming the run within seconds of each other cannot be told apart: not confirmed.
+        let twin = transcript("c-twin", "x\n");
         let mut both = codex.clone();
         both.push(rollout(&twin, "/repo"));
-        assert_eq!(
-            coordinator_candidates(&[&d], &[], &both, std::slice::from_ref(&worker.path), mentions).len(),
-            2
-        );
-        for f in [&coordinator, &worker, &elsewhere, &unrelated, &twin] {
+        let close = |f: &TranscriptFile| {
+            if f.path == twin.path {
+                Some(Some(5_000))
+            } else {
+                first(f)
+            }
+        };
+        let ambiguous = coordinator_candidates(&[&d], &[], &both, std::slice::from_ref(&worker.path), close);
+        assert_eq!(ambiguous[0].file.path, coordinator.path);
+        assert!(!coordinator_confirmed(&ambiguous));
+        assert!(!coordinator_confirmed(&[]));
+        for f in [&coordinator, &observer, &worker, &elsewhere, &unrelated, &twin] {
             let _ = std::fs::remove_file(&f.path);
         }
     }

@@ -139,7 +139,7 @@ pub struct CodexThread {
     pub created_s: i64,
     pub updated_s: i64,
     pub cwd: String,
-    /// Title Codex gave the thread (user-set `name` wins over the generated `title`).
+    /// The name the user gave the thread. The generated `title` is prompt text and is not read.
     pub title: Option<String>,
     /// Cumulative tokens as the index records them, with no input/output split.
     pub tokens_used: u64,
@@ -167,10 +167,11 @@ pub fn codex_threads(db: &Path, updated_since_s: i64) -> Vec<CodexThread> {
     let sql = format!(
         "SELECT t.id, t.rollout_path, t.created_at, t.updated_at, t.cwd, {title}, {tokens}, {archived}, {model}, {effort}, {role}
          FROM threads t WHERE t.updated_at >= ?1 ORDER BY t.updated_at DESC",
+        // Only a name the user set. The generated `title` is the first words of the prompt, which is prompt text.
         title = if table_has_column(&conn, "threads", "name") {
-            "coalesce(nullif(t.name, ''), nullif(t.title, ''))".to_owned()
+            "nullif(t.name, '')".to_owned()
         } else {
-            col("title", "NULL")
+            "NULL".to_owned()
         },
         tokens = col("tokens_used", "0"),
         archived = col("archived", "0"),
@@ -644,44 +645,55 @@ fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> b
         .unwrap_or(false)
 }
 
-/// True when `needle` occurs in the first `limit` bytes of the file. Orca puts the task and dispatch ids in the
-/// worker's opening prompt, so a transcript that opens with the dispatch id belongs to that worker. Nothing from
-/// the file is kept: the bytes are only searched.
-pub fn opens_with(path: &Path, needle: &str, limit: u64) -> bool {
+/// True when `needle` occurs in one of the first `max_lines` lines of the file. Orca puts the task and dispatch ids in
+/// the worker's opening prompt, so a worker's transcript has the dispatch id near its top. A coordinator's transcript
+/// also contains the id, but only much later, in the output of the commands that created the dispatch. Position in
+/// lines, not bytes, separates them: Codex rollouts open with a very large `session_meta` line, so a byte window
+/// reaches far past the prompt. Nothing from the file is kept; the lines are only searched.
+pub fn opens_with(path: &Path, needle: &str, max_lines: usize) -> bool {
     use std::io::Read;
+    // A bound on the bytes read, in case one of the first lines is enormous.
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
     let Ok(file) = File::open(path) else {
         return false;
     };
-    let mut head = Vec::new();
-    if file.take(limit).read_to_end(&mut head).is_err() {
-        return false;
+    let mut reader = BufReader::new(file.take(MAX_BYTES));
+    let mut line = Vec::new();
+    for _ in 0..max_lines {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {
+                if line.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                    return true;
+                }
+            }
+        }
     }
-    head.windows(needle.len()).any(|window| window == needle.as_bytes())
+    false
 }
 
-/// True when `needle` occurs anywhere in the file, streamed in chunks so a large transcript is never held in memory.
-/// Used to find the session that issued an Orca run (its transcript mentions the run id). Only matched, never kept.
-pub fn mentions(path: &Path, needle: &str) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = File::open(path) else {
-        return false;
-    };
-    let needle = needle.as_bytes();
-    let mut buffer = vec![0u8; 1 << 20];
-    let mut carried: Vec<u8> = Vec::new();
+/// When the file first mentions `needle`: `None` if it never does, `Some(None)` if it does on a line with no readable
+/// timestamp, else the epoch milliseconds of that line. Streamed line by line, so a large transcript is never held
+/// whole. The session that issued an Orca run names its id the moment it creates the run, while a session that only
+/// looks at the run later names it much later, so the first mention tells them apart. Only matched, never kept.
+pub fn first_mention(path: &Path, needle: &str) -> Option<Option<i64>> {
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     loop {
-        let Ok(read) = file.read(&mut buffer) else {
-            return false;
-        };
-        if read == 0 {
-            return false;
+        line.clear();
+        if reader.read_until(b'\n', &mut line).ok()? == 0 {
+            return None;
         }
-        carried.extend_from_slice(&buffer[..read]);
-        if carried.windows(needle.len()).any(|w| w == needle) {
-            return true;
+        if line.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+            let stamp = serde_json::from_slice::<Value>(&line)
+                .ok()
+                .and_then(|v| v.get("timestamp").and_then(Value::as_str).map(str::to_owned))
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+                .map(|t| t.timestamp_millis());
+            return Some(stamp);
         }
-        let keep = needle.len().saturating_sub(1).min(carried.len());
-        carried.drain(..carried.len() - keep);
     }
 }
 
@@ -1135,34 +1147,56 @@ mod tests {
 
     #[test]
     fn a_transcript_belongs_to_a_worker_only_when_it_opens_with_the_dispatch_id() {
-        let opening = temp("opens", "{\"msg\":\"preamble ctx_abc123 do the task\"}\n");
-        assert!(opens_with(&opening.path, "ctx_abc123", 4096));
-        assert!(!opens_with(&opening.path, "ctx_other", 4096));
-        // The coordinator's transcript mentions the id too, but only after a long unrelated prefix.
-        let later = temp("later", &format!("{}ctx_abc123\n", "x".repeat(8192)));
-        assert!(
-            !opens_with(&later.path, "ctx_abc123", 4096),
-            "an id past the opening bytes does not count"
+        let opening = temp(
+            "opens",
+            "{\"meta\":true}\n{\"msg\":\"preamble ctx_abc123 do the task\"}\n",
         );
-        assert!(!opens_with(Path::new("/definitely/missing.jsonl"), "ctx_abc123", 4096));
-        let _ = fs::remove_file(&opening.path);
-        let _ = fs::remove_file(&later.path);
+        assert!(opens_with(&opening.path, "ctx_abc123", 20));
+        assert!(!opens_with(&opening.path, "ctx_other", 20));
+        // A huge first line (a Codex session_meta) must not push the prompt out of reach: it is still line 2.
+        let big = temp(
+            "opens-big",
+            &format!("{}\n{{\"msg\":\"ctx_abc123\"}}\n", "x".repeat(300_000)),
+        );
+        assert!(opens_with(&big.path, "ctx_abc123", 20));
+        // The coordinator mentions the id too, but only in the output of commands run long after the opening.
+        let coordinator = temp("later", &format!("{}ctx_abc123\n", "line\n".repeat(40)));
+        assert!(
+            !opens_with(&coordinator.path, "ctx_abc123", 20),
+            "an id past the opening lines does not count"
+        );
+        assert!(!opens_with(Path::new("/definitely/missing.jsonl"), "ctx_abc123", 20));
+        for f in [&opening, &big, &coordinator] {
+            let _ = fs::remove_file(&f.path);
+        }
     }
 
     #[test]
-    fn mentions_finds_an_id_anywhere_including_across_chunk_boundaries() {
-        let near = temp("mention-near", "{\"m\":\"run_abc\"}\n");
-        assert!(mentions(&near.path, "run_abc"));
-        assert!(!mentions(&near.path, "run_zzz"));
-        // Place the needle so it straddles the 1 MiB read boundary.
-        let mut body = "x".repeat((1 << 20) - 3);
-        body.push_str("run_abc");
-        body.push_str(&"y".repeat(100));
-        let straddling = temp("mention-straddle", &body);
-        assert!(mentions(&straddling.path, "run_abc"));
-        assert!(!mentions(Path::new("/definitely/missing.jsonl"), "run_abc"));
-        let _ = fs::remove_file(&near.path);
-        let _ = fs::remove_file(&straddling.path);
+    fn first_mention_reports_when_an_id_first_appears() {
+        let body = "{\"timestamp\":\"2026-10-14T21:00:00.000Z\",\"m\":\"nothing\"}\n\
+{\"timestamp\":\"2026-10-14T21:02:41.500Z\",\"m\":\"created run_abc\"}\n\
+{\"timestamp\":\"2026-10-14T21:09:00.000Z\",\"m\":\"run_abc again\"}\n";
+        let file = temp("mention-first", body);
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-14T21:02:41.500Z")
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            first_mention(&file.path, "run_abc"),
+            Some(Some(at)),
+            "the earliest line wins"
+        );
+        assert_eq!(first_mention(&file.path, "run_zzz"), None);
+        let bare = temp("mention-bare", "{\"m\":\"run_abc without a timestamp\"}\n");
+        assert_eq!(first_mention(&bare.path, "run_abc"), Some(None));
+        // A needle on a line far into a large file is still found.
+        let mut big = "{\"timestamp\":\"2026-10-14T21:00:00Z\"}\n".repeat(60_000);
+        big.push_str("{\"timestamp\":\"2026-10-14T22:00:00Z\",\"m\":\"run_late\"}\n");
+        let late = temp("mention-late", &big);
+        assert!(matches!(first_mention(&late.path, "run_late"), Some(Some(_))));
+        assert_eq!(first_mention(Path::new("/definitely/missing.jsonl"), "run_abc"), None);
+        for f in [&file, &bare, &late] {
+            let _ = fs::remove_file(&f.path);
+        }
     }
 
     #[test]
@@ -1201,9 +1235,8 @@ mod tests {
         );
         let c = &threads[1];
         assert_eq!(
-            c.title.as_deref(),
-            Some("Child task"),
-            "an empty name falls back to the title"
+            c.title, None,
+            "no user-set name: the generated title is prompt text and is not used"
         );
         assert_eq!((c.archived, c.agent_role.as_deref()), (true, Some("worker")));
         assert_eq!(codex_spawn_edges(&path), [("p".to_string(), "c".to_string())]);
