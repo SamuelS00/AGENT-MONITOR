@@ -194,7 +194,7 @@ export function Timeline() {
                   {n.level && <span className={`tag tag-role tag-${n.level}`}>{ROLE_LABEL[n.level]}</span>}
                   {tries.get(n.id) && (
                     <span className={`tag ${isSuperseded(tries.get(n.id)) ? "tag-retried" : ""}`}>
-                      try {tries.get(n.id).attempt} of {tries.get(n.id).of}
+                      {tries.get(n.id).basis === "name" ? "≈ " : ""}try {tries.get(n.id).attempt} of {tries.get(n.id).of}
                     </span>
                   )}
                 </div>

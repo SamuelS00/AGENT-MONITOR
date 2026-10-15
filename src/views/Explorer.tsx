@@ -331,12 +331,15 @@ function Tree({ rootId }: { rootId: string }) {
                 <span
                   className={`tag ${isSuperseded(tries.get(n.id)) ? "tag-retried" : ""}`}
                   title={
-                    isSuperseded(tries.get(n.id))
+                    (isSuperseded(tries.get(n.id))
                       ? "A later try of the same task replaced this one"
-                      : "Started again after an earlier try of the same task"
+                      : "Started again after an earlier try of the same task") +
+                    (tries.get(n.id)!.basis === "name"
+                      ? ". Matched by parent and name: the tool did not record the retry."
+                      : ". Recorded by the tool.")
                   }
                 >
-                  try {tries.get(n.id)!.attempt} of {tries.get(n.id)!.of}
+                  {tries.get(n.id)!.basis === "name" ? "≈ " : ""}try {tries.get(n.id)!.attempt} of {tries.get(n.id)!.of}
                 </span>
               )}
               {n.parentId && n.relationship !== "confirmed" && (

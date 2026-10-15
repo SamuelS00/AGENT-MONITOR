@@ -460,6 +460,19 @@ fn orca_nodes(dispatches: &[OrcaDispatch]) -> Vec<ExecutionNode> {
                 "Orca",
             );
             node.parent_id = Some(parent);
+            // A recorded retry, or a later dispatch of a task that already had one: both are the tool's own record.
+            let earlier = dispatches
+                .iter()
+                .take_while(|other| other.id != dispatch.id)
+                .filter(|other| other.task_id == dispatch.task_id)
+                .last()
+                .map(|other| other.id.as_str());
+            node.retry_of = dispatch
+                .retry_of
+                .as_deref()
+                .filter(|target| known.contains(target) && *target != dispatch.id)
+                .or(earlier)
+                .map(|target| format!("orca-dispatch:{target}"));
             node.status = status;
             node.relationship = Reliability::Confirmed;
             node.started_at = dispatch.created_s.and_then(rfc3339);
@@ -1336,6 +1349,7 @@ mod tests {
             depth: 1,
             worktree_path: None,
             agent: None,
+            retry_of: None,
             title: Some(format!("title {id}")),
             created_s: Some(1_700_000_000),
             completed_s: None,
@@ -1384,6 +1398,26 @@ mod tests {
             Some("orca-run:run1"),
             "unknown parent task falls back to the run"
         );
+    }
+
+    #[test]
+    fn a_retry_is_set_only_when_orca_recorded_it() {
+        let first = dispatch("first", "run", None, "failed");
+        let mut explicit = dispatch("explicit", "run", None, "completed");
+        explicit.task_id = "task_other".into();
+        explicit.retry_of = Some("first".into());
+        // Same Task dispatched again: Orca's own model of a retry.
+        let mut again = dispatch("again", "run", None, "completed");
+        again.task_id = first.task_id.clone();
+        // A fresh task that merely looks alike is not recorded as a retry.
+        let mut lookalike = dispatch("lookalike", "run", None, "completed");
+        lookalike.task_id = "task_new".into();
+        let nodes = orca_nodes(&[first, explicit, again, lookalike]);
+        let retry = |id: &str| nodes.iter().find(|n| n.id == id).and_then(|n| n.retry_of.clone());
+        assert_eq!(retry("orca-dispatch:first"), None);
+        assert_eq!(retry("orca-dispatch:explicit").as_deref(), Some("orca-dispatch:first"));
+        assert_eq!(retry("orca-dispatch:again").as_deref(), Some("orca-dispatch:first"));
+        assert_eq!(retry("orca-dispatch:lookalike"), None);
     }
 
     #[test]

@@ -28,6 +28,8 @@ export interface AgentNode {
   sessionId: string;
   label: string;
   role: AgentRole;
+  /** The node this one retries, when the tool recorded it. A retry by a fresh task is not recorded. */
+  retryOf?: string;
   /** Set only when the collector recorded this node's place in an orchestration. */
   level?: AgentRole;
   tool: string;

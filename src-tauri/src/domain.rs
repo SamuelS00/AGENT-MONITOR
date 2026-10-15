@@ -106,6 +106,9 @@ pub struct ExecutionNode {
     /// The tool's own id for this session. It survives a session moving from a live process to files alone, which a
     /// node id does not, so stored history can tell it is the same session.
     pub session_ref: Option<String>,
+    /// The node this one is a new try of, when the tool recorded it (an Orca retry of the same task). A retry that a
+    /// coordinator makes by starting a fresh task is not recorded and is not set here.
+    pub retry_of: Option<String>,
     /// Working directory the tool itself recorded (or the process was started in); `None` when unknown.
     pub project_path: Option<String>,
     pub label: String,
@@ -140,6 +143,7 @@ impl ExecutionNode {
             role: ExecutionRole::Session,
             level: None,
             session_ref: None,
+            retry_of: None,
             project_path: None,
             label,
             task: None,
@@ -188,6 +192,7 @@ mod tests {
         assert_eq!(value["role"], "session");
         assert!(value["task"].is_null());
         assert!(value["level"].is_null());
+        assert!(value["retryOf"].is_null());
         assert!(value["projectPath"].is_null());
     }
 

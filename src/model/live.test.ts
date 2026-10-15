@@ -300,4 +300,18 @@ describe("historyFromStored", () => {
     expect(bare.tokens.value).toBeUndefined();
     expect(bare.status).toBe("disconnected");
   });
+
+  it("carries a recorded retry link through to the node", () => {
+    const dataset = datasetFromSnapshot(
+      fixtureSnapshot(
+        [
+          { id: "fixture-first", label: "Build", tool: "Orca", status: "failed", relationship: "confirmed" },
+          { id: "fixture-second", label: "Build", tool: "Orca", status: "completed", relationship: "confirmed", retryOf: "fixture-first" },
+        ],
+        [],
+      ),
+    );
+    expect(dataset.nodes.find((n) => n.id === "fixture-second")?.retryOf).toBe("fixture-first");
+    expect(dataset.nodes.find((n) => n.id === "fixture-first")?.retryOf).toBeUndefined();
+  });
 });

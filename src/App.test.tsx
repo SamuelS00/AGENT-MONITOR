@@ -258,8 +258,8 @@ describe("App (orchestration explorer)", () => {
 
   it("marks each try of a retried task", async () => {
     await open();
-    expect(await screen.findByText("try 1 of 2")).toBeInTheDocument();
-    expect(screen.getByText("try 2 of 2")).toBeInTheDocument();
+    expect(await screen.findByText(/try 1 of 2/)).toBeInTheDocument();
+    expect(screen.getByText(/try 2 of 2/)).toBeInTheDocument();
   });
 
   it("lists orchestrations apart from plain sessions, each entry saying what it is", async () => {
@@ -313,8 +313,8 @@ describe("App (orchestration explorer)", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Timeline/ }));
     const summary = await screen.findByRole("group", { name: "Orchestration summary" });
     expect(within(summary).getByText(/2 agents · 1 retry/)).toBeInTheDocument();
-    expect(await screen.findByText("try 1 of 2")).toBeInTheDocument();
-    expect(screen.getByText("try 2 of 2")).toBeInTheDocument();
+    expect(await screen.findByText(/try 1 of 2/)).toBeInTheDocument();
+    expect(screen.getByText(/try 2 of 2/)).toBeInTheDocument();
   });
 
   it("tells apart plain sessions that would read the same", async () => {

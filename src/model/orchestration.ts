@@ -11,21 +11,36 @@ export interface Attempt {
   /** 1-based position among the tries of the same task. */
   attempt: number;
   of: number;
+  /** `recorded` when the tool linked the tries (an Orca retry of the same task); `name` when only the parent and the
+   *  name match, which is a guess: a coordinator that retries by starting a fresh task leaves no record. */
+  basis: "recorded" | "name";
 }
 
-/** Tries of one task under the same parent: Orca workers that share a parent and a name. The coordinator retried
- *  a task by starting a new dispatch for it, so the earlier try is superseded by the later one. */
+/** Tries of one task. Recorded retries come first and are certain. Orca workers that share a parent and a name and have
+ *  no recorded link are grouped as a second, weaker kind. The earlier try is superseded by the later one. */
 export function attempts(index: TreeIndex, rootId: string): Map<string, Attempt> {
-  const groups = new Map<string, AgentNode[]>();
-  for (const n of descendants(index, rootId).filter(isOrcaWorker)) {
-    const key = `${n.parentId}|${n.label}`;
-    groups.set(key, [...(groups.get(key) ?? []), n]);
-  }
+  const workers = descendants(index, rootId).filter(isOrcaWorker);
+  const ids = new Set(workers.map((n) => n.id));
+  // Union the tries linked by a recorded retry.
+  const parent = new Map<string, string>(workers.map((n) => [n.id, n.id]));
+  const find = (id: string): string => (parent.get(id) === id ? id : find(parent.get(id)!));
+  for (const n of workers) if (n.retryOf && ids.has(n.retryOf)) parent.set(find(n.id), find(n.retryOf));
+  const groups = new Map<string, { nodes: AgentNode[]; basis: Attempt["basis"] }>();
+  const add = (key: string, n: AgentNode, basis: Attempt["basis"]) => {
+    const g = groups.get(key) ?? { nodes: [], basis };
+    g.nodes.push(n);
+    groups.set(key, g);
+  };
+  for (const n of workers) add(`recorded|${find(n.id)}`, n, "recorded");
+  // Anything not already in a recorded group of two or more is matched by name.
+  const recorded = new Set([...groups.values()].filter((g) => g.nodes.length > 1).flatMap((g) => g.nodes.map((n) => n.id)));
+  for (const [key, g] of [...groups]) if (g.nodes.length < 2) groups.delete(key);
+  for (const n of workers) if (!recorded.has(n.id)) add(`name|${n.parentId}|${n.label}`, n, "name");
   const out = new Map<string, Attempt>();
-  for (const tries of groups.values()) {
-    if (tries.length < 2) continue;
-    tries.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || a.id.localeCompare(b.id));
-    tries.forEach((n, i) => out.set(n.id, { attempt: i + 1, of: tries.length }));
+  for (const g of groups.values()) {
+    if (g.nodes.length < 2) continue;
+    g.nodes.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || a.id.localeCompare(b.id));
+    g.nodes.forEach((n, i) => out.set(n.id, { attempt: i + 1, of: g.nodes.length, basis: g.basis }));
   }
   return out;
 }

@@ -20,6 +20,8 @@ export interface ExecutionNode {
   role?: "session" | "service";
   /** Position in an orchestration, from recorded structure only. Absent for plain sessions. */
   level?: "meta" | "orchestrator" | "agent" | "subagent";
+  /** The node this one is a new try of, when the tool recorded the retry. */
+  retryOf?: string;
   /** Working directory the tool recorded for this session, when known. */
   projectPath?: string;
   label: string;

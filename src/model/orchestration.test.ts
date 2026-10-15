@@ -42,8 +42,8 @@ describe("isOrchestration", () => {
 describe("attempts", () => {
   it("numbers the tries of the same task under one parent and nothing else", () => {
     const tries = attempts(tree(), "fixture-root");
-    expect(tries.get("fixture-a1-try1")).toEqual({ attempt: 1, of: 2 });
-    expect(tries.get("fixture-a1-try2")).toEqual({ attempt: 2, of: 2 });
+    expect(tries.get("fixture-a1-try1")).toEqual({ attempt: 1, of: 2, basis: "name" });
+    expect(tries.get("fixture-a1-try2")).toEqual({ attempt: 2, of: 2, basis: "name" });
     expect(tries.has("fixture-b1")).toBe(false);
     expect(tries.has("fixture-orch-a")).toBe(false);
     expect(isSuperseded(tries.get("fixture-a1-try1"))).toBe(true);
@@ -59,6 +59,46 @@ describe("attempts", () => {
       node({ id: "fixture-x2", parentId: "fixture-o2", label: "Same name", level: "agent", startedAt: 2 }),
     ]);
     expect(attempts(index, "fixture-root").size).toBe(0);
+  });
+});
+
+describe("attempts (recorded retries)", () => {
+  it("follows a recorded retry even when the names differ, and calls it recorded", () => {
+    const index = buildIndex([
+      node({ id: "fixture-root", label: "meta", level: "meta" }),
+      node({ id: "fixture-first", parentId: "fixture-root", label: "Build", level: "agent", status: "failed", startedAt: 1 }),
+      node({
+        id: "fixture-second",
+        parentId: "fixture-root",
+        label: "Build again",
+        level: "agent",
+        startedAt: 2,
+        retryOf: "fixture-first",
+      }),
+      node({
+        id: "fixture-third",
+        parentId: "fixture-root",
+        label: "Build once more",
+        level: "agent",
+        startedAt: 3,
+        retryOf: "fixture-second",
+      }),
+    ]);
+    const tries = attempts(index, "fixture-root");
+    expect(tries.get("fixture-first")).toEqual({ attempt: 1, of: 3, basis: "recorded" });
+    expect(tries.get("fixture-second")).toEqual({ attempt: 2, of: 3, basis: "recorded" });
+    expect(tries.get("fixture-third")).toEqual({ attempt: 3, of: 3, basis: "recorded" });
+  });
+
+  it("ignores a retry link to a node that is not in the tree, and falls back to the name", () => {
+    const index = buildIndex([
+      node({ id: "fixture-root", label: "meta", level: "meta" }),
+      node({ id: "fixture-a", parentId: "fixture-root", label: "Same", level: "agent", startedAt: 1, retryOf: "fixture-gone" }),
+      node({ id: "fixture-b", parentId: "fixture-root", label: "Same", level: "agent", startedAt: 2 }),
+    ]);
+    const tries = attempts(index, "fixture-root");
+    expect(tries.get("fixture-a")?.basis).toBe("name");
+    expect(tries.get("fixture-b")?.basis).toBe("name");
   });
 });
 
