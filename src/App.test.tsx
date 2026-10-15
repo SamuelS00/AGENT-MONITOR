@@ -276,6 +276,47 @@ describe("App (orchestration explorer)", () => {
     expect(new Set(labels).size).toBe(labels.length);
   });
 
+  it("lists the orchestration first in the Monitor with what it holds, and not as a failure when the failure was retried", async () => {
+    loadMock.mockResolvedValue(orchestration);
+    render(<App />);
+    const title = await screen.findByText("Fixture orchestration");
+    const rows = Array.from(document.querySelectorAll(".trow.session"));
+    expect(rows[0]).toContainElement(title);
+    expect(within(rows[0] as HTMLElement).getByText("Orchestration")).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText(/2 agents · 1 retry/)).toBeInTheDocument();
+    expect(rows[0].className).not.toContain("st-failed");
+    expect(rows.length).toBe(2);
+  });
+
+  it("surfaces an orchestration with an open failure under Needs attention", async () => {
+    const broken: MonitorSnapshot = {
+      ...fixtureSnapshot,
+      executions: [meta, worker("fixture-execution:only", "Fixture task", "failed", "2026-01-01T00:00:01.000Z")],
+    };
+    loadMock.mockResolvedValue(broken);
+    render(<App />);
+    // An open failure is not "active" work: the row is under Needs attention, not Active.
+    const attention = await screen.findByRole("radio", { name: /Needs attention/ });
+    await waitFor(() => expect(within(attention).getByText("1")).toBeInTheDocument());
+    fireEvent.click(attention);
+    await screen.findByText("Fixture orchestration");
+    const row = document.querySelector(".trow.session") as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.className).toContain("st-failed");
+    expect(within(row).getByText(/1 failed/)).toBeInTheDocument();
+  });
+
+  it("shows the summary and the tries on the Timeline too", async () => {
+    loadMock.mockResolvedValue(orchestration);
+    render(<App />);
+    await screen.findByText("Fixture orchestration");
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: /Timeline/ }));
+    const summary = await screen.findByRole("group", { name: "Orchestration summary" });
+    expect(within(summary).getByText(/2 agents · 1 retry/)).toBeInTheDocument();
+    expect(await screen.findByText("try 1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("try 2 of 2")).toBeInTheDocument();
+  });
+
   it("tells apart plain sessions that would read the same", async () => {
     const twin = (id: string): ExecutionNode => ({
       ...fixtureExecution,

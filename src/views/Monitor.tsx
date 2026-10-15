@@ -2,7 +2,8 @@ import { useMemo, useRef, useState } from "react";
 import { ModelBadge } from "../ui/ModelBadge";
 import { nodeBrandColor } from "../ui/brand";
 import { useStore } from "../app/storeContext";
-import { descendants, durationMs, rollupTokens, sessionStatus } from "../model/tree";
+import { descendants, durationMs, isLive, rollupTokens, sessionStatus } from "../model/tree";
+import { describe, isOrchestration, summarize, type OrchestrationSummary } from "../model/orchestration";
 import { fmtDuration, fmtTokens } from "../model/format";
 import { STATUS_ORDER, isActive } from "../model/status";
 import type { AgentStatus } from "../model/types";
@@ -12,6 +13,15 @@ import { useMenu } from "../ui/useMenu";
 
 type Scope = "active" | "attention" | "all";
 const attention = (s: AgentStatus) => s === "waiting" || s === "failed" || s === "disconnected";
+
+/** The state an orchestration row shows. A live orchestration keeps its live status; otherwise an open failure or a wait
+ *  decides it. Finished work keeps the root's own status, so nothing is claimed completed that the tool did not record. */
+function orchestrationStatus(base: AgentStatus, s: OrchestrationSummary): AgentStatus {
+  if (isLive(base)) return base;
+  if (s.outcome === "failed") return "failed";
+  if (s.outcome === "needs-input") return "waiting";
+  return base;
+}
 
 export function Monitor() {
   const st = useStore();
@@ -26,12 +36,16 @@ export function Monitor() {
       data.sessions
         .map((s) => {
           const root = index.byId.get(s.rootId)!;
-          const status = sessionStatus(index, s.rootId);
+          const orchestration = !!root && isOrchestration(root);
+          const summary = orchestration ? summarize(index, s.rootId) : undefined;
+          const base = sessionStatus(index, s.rootId);
+          const status = summary ? orchestrationStatus(base, summary) : base;
           const all = [root, ...descendants(index, s.rootId)];
           return {
             s,
             root,
             status,
+            summary,
             agents: all.length,
             running: all.filter((n) => n.status === "running").length,
             waiting: all.filter((n) => n.status === "waiting").length,
@@ -59,7 +73,10 @@ export function Monitor() {
       items: visible
         .filter((r) => r.s.projectId === p.id)
         .sort(
-          (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) || (b.root.startedAt ?? 0) - (a.root.startedAt ?? 0),
+          (a, b) =>
+            Number(!!b.summary) - Number(!!a.summary) ||
+            STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
+            (b.root.startedAt ?? 0) - (a.root.startedAt ?? 0),
         ),
     }))
     .filter((g) => g.items.length);
@@ -155,7 +172,7 @@ export function Monitor() {
                     {items.filter((r) => isActive(r.status)).length} active · {items.length} shown
                   </span>
                 </div>
-                {items.map(({ s, root, status, agents, running, waiting, roll }) => {
+                {items.map(({ s, root, status, summary, agents, running, waiting, roll }) => {
                   const dur = durationMs(root, now);
                   return (
                     <div
@@ -179,13 +196,23 @@ export function Monitor() {
                         <StatusGlyph status={status} />
                       </span>
                       <span role="cell" className="c-main">
-                        <span className="title trunc">{s.title}</span>
-                        {(isActive(status) ? running > 0 || waiting > 0 || root.activity : root.activity) && (
+                        <span className="title trunc">
+                          {summary && <span className="tag tag-role">Orchestration</span>} {summary ? (root.activity ?? s.title) : s.title}
+                        </span>
+                        {summary ? (
                           <span className="sub trunc">
-                            {[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`].filter(Boolean).join(", ")}
-                            {(running > 0 || waiting > 0) && root.activity ? " · " : ""}
-                            {root.activity}
+                            {[describe(summary), running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`]
+                              .filter(Boolean)
+                              .join(" · ") || "No delegated work recorded"}
                           </span>
+                        ) : (
+                          (isActive(status) ? running > 0 || waiting > 0 || root.activity : root.activity) && (
+                            <span className="sub trunc">
+                              {[running > 0 && `${running} running`, waiting > 0 && `${waiting} waiting`].filter(Boolean).join(", ")}
+                              {(running > 0 || waiting > 0) && root.activity ? " · " : ""}
+                              {root.activity}
+                            </span>
+                          )
                         )}
                       </span>
                       <span role="cell" className="c-main c-tool">

@@ -3,6 +3,9 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "../app/storeContext";
 import { nodeBrandColor } from "../ui/brand";
 import { concurrency, descendants, endOf, isLive, visibleRows } from "../model/tree";
+import { attempts, isSuperseded } from "../model/orchestration";
+import { ROLE_LABEL } from "../model/status";
+import { OrchestrationSummary } from "../ui/OrchestrationSummary";
 import { fmtClock, fmtDate, fmtDuration, fmtShortClock } from "../model/format";
 import { STATUS_LABEL } from "../model/status";
 import { Banner, EmptyState, Segmented, StatusGlyph } from "../ui/primitives";
@@ -44,6 +47,7 @@ export function Timeline() {
   const rootId = current?.rootId;
   const rows = useMemo(() => (rootId ? visibleRows(index, rootId, expanded) : []), [index, rootId, expanded]);
   const all = useMemo(() => (rootId ? [index.byId.get(rootId)!, ...descendants(index, rootId)] : []), [index, rootId]);
+  const tries = useMemo(() => (rootId ? attempts(index, rootId) : new Map()), [index, rootId]);
 
   if (!rootId)
     return (
@@ -118,6 +122,7 @@ export function Timeline() {
   return (
     <div className="view">
       <ExplorerBar withModes={false} />
+      <OrchestrationSummary rootId={rootId} />
       <div className="subbar subbar-2">
         <Segmented
           label="Range"
@@ -186,6 +191,12 @@ export function Timeline() {
                   <span className="trunc" title={n.activity ? `${n.label} · ${n.activity}` : n.label}>
                     {n.label}
                   </span>
+                  {n.level && <span className={`tag tag-role tag-${n.level}`}>{ROLE_LABEL[n.level]}</span>}
+                  {tries.get(n.id) && (
+                    <span className={`tag ${isSuperseded(tries.get(n.id)) ? "tag-retried" : ""}`}>
+                      try {tries.get(n.id).attempt} of {tries.get(n.id).of}
+                    </span>
+                  )}
                 </div>
                 <div className="tl-canvas">
                   {ticks.map((t) => (

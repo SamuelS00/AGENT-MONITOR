@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Network, Lis
 import { useStore } from "../app/storeContext";
 import { descendants, durationMs, parallelIds, rollupTokens, visibleRows, type Row } from "../model/tree";
 import { attempts, describe, isOrchestration, isSuperseded, lastActive, summarize } from "../model/orchestration";
+import { OrchestrationSummary } from "../ui/OrchestrationSummary";
 import { fmtAgo, fmtDuration, fmtTokens } from "../model/format";
 import { Banner, EmptyState, Segmented, SkeletonRows, StatusGlyph, Val } from "../ui/primitives";
 import { copy } from "../ui/clipboard";
@@ -73,38 +74,6 @@ export function SessionPicker() {
       </button>
       {menu.node}
     </>
-  );
-}
-
-const OUTCOME: Record<ReturnType<typeof summarize>["outcome"], string> = {
-  running: "Running",
-  "needs-input": "Needs input",
-  failed: "Failed",
-  finished: "Finished",
-};
-
-/** What the orchestration is and how it went, above its tree. */
-function OrchestrationSummary({ rootId }: { rootId: string }) {
-  const { index, now } = useStore();
-  const root = index.byId.get(rootId);
-  if (!root || !isOrchestration(root)) return null;
-  const s = summarize(index, rootId);
-  const dur = durationMs(root, now);
-  return (
-    <div className="orch-summary" role="group" aria-label="Orchestration summary">
-      <span className={`orch-outcome orch-${s.outcome}`}>{OUTCOME[s.outcome]}</span>
-      <span className="orch-meta">
-        {ROLE_LABEL[root.level ?? "meta"]} <ModelBadge node={root} compact />
-      </span>
-      <span className="orch-counts">{describe(s) || "No delegated work recorded"}</span>
-      <span className="grow" />
-      <span className="mono">
-        <Val m={s.tokens.tokens} fmt={fmtTokens} lowerBound={s.tokens.partial && s.tokens.tokens.reliability !== "unavailable"} /> tokens
-      </span>
-      <span className="mono">
-        <Val m={dur} fmt={fmtDuration} />
-      </span>
-    </div>
   );
 }
 
